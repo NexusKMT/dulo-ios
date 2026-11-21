@@ -21,7 +21,7 @@ final class FeedStreamStore: ObservableObject {
     /// Stream ids of pages that currently demand the display stay awake.
     @Published private(set) var keepAwakeVotes: Set<Int64> = []
 
-    private let queue: ShuffledVideoQueue
+    private let queue: ShuffledVideoQueue<SystemRandomNumberGenerator>
     private var nextStreamId: Int64 = 0
 
     init(videos: [VideoItem]) {
