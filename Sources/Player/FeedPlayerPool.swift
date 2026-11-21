@@ -15,7 +15,12 @@ final class FeedPlayerPool {
     let playerA: PlayerState
     let playerB: PlayerState
 
-    init(playerA: PlayerState = PlayerState(), playerB: PlayerState = PlayerState()) {
+    init() {
+        self.playerA = PlayerState()
+        self.playerB = PlayerState()
+    }
+
+    init(playerA: PlayerState, playerB: PlayerState) {
         self.playerA = playerA
         self.playerB = playerB
     }
