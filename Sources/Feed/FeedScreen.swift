@@ -11,7 +11,6 @@ struct FeedScreen: View {
     @ObservedObject var viewModel: FeedViewModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var store: FeedStreamStore?
-    @State private var showSettings = false
 
     var body: some View {
         ZStack {
@@ -26,7 +25,6 @@ struct FeedScreen: View {
                 statusOverlay
             }
             exitHotspot
-            settingsButton
         }
         .task(id: viewModel.videos.isEmpty) {
             if store == nil && !viewModel.videos.isEmpty {
@@ -45,9 +43,6 @@ struct FeedScreen: View {
             #if canImport(UIKit)
             UIApplication.shared.isIdleTimerDisabled = false
             #endif
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsView(viewModel: viewModel)
         }
     }
 
@@ -85,18 +80,5 @@ struct FeedScreen: View {
                 #endif
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private var settingsButton: some View {
-        Button {
-            showSettings = true
-        } label: {
-            Image(systemName: "gearshape.fill")
-                .font(.system(size: 16))
-                .foregroundStyle(.white.opacity(0.4))
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 }
