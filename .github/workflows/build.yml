@@ -17,8 +17,15 @@ jobs:
 
       - name: Unit tests (simulator)
         run: |
+          DEVICE_ID=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
+          if [ -n "$DEVICE_ID" ]; then
+            DEST="platform=iOS Simulator,id=$DEVICE_ID"
+          else
+            DEST="platform=iOS Simulator,name=iPhone 16"
+          fi
+          echo "Testing on destination: $DEST"
           xcodebuild test -project Dulo.xcodeproj -scheme Dulo \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -destination "$DEST" \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Archive (unsigned; TrollStore signs on install)
