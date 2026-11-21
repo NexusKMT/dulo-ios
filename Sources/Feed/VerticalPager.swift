@@ -59,6 +59,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
             collectionView.backgroundColor = .black
             collectionView.isPagingEnabled = true
+            collectionView.isPrefetchingEnabled = false
             collectionView.showsVerticalScrollIndicator = false
             collectionView.contentInsetAdjustmentBehavior = .never
             collectionView.bounces = true
@@ -110,6 +111,8 @@ struct VerticalPager: UIViewControllerRepresentable {
         static let reuseId = "FeedVideoCell"
         private var hostingController: UIHostingController<AnyView>?
         private var currentStreamId: Int64?
+        private var currentVideoId: String?
+        private weak var viewModel: FeedViewModel?
 
         override func prepareForReuse() {
             super.prepareForReuse()
@@ -117,6 +120,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         private func cleanupHosting() {
+            if let videoId = currentVideoId {
+                viewModel?.cancelResolve(for: videoId)
+            }
             if let host = hostingController {
                 host.willMove(toParent: nil)
                 host.view.removeFromSuperview()
@@ -124,27 +130,29 @@ struct VerticalPager: UIViewControllerRepresentable {
                 hostingController = nil
             }
             currentStreamId = nil
+            currentVideoId = nil
+            viewModel = nil
         }
 
         func configure(
             item: FeedStreamItem,
             store: FeedStreamStore,
             viewModel: FeedViewModel,
-            parent: UIViewController,
-            onNextVideo: @escaping () -> Void
+            parent: UIViewController
         ) {
             if currentStreamId == item.streamId && hostingController != nil {
                 return
             }
             cleanupHosting()
             currentStreamId = item.streamId
+            currentVideoId = item.video.id
+            self.viewModel = viewModel
 
             let page = FeedVideoPage(
                 streamId: item.streamId,
                 video: item.video,
                 store: store,
-                viewModel: viewModel,
-                onNextVideo: onNextVideo
+                viewModel: viewModel
             ).id(item.streamId)
 
             let host = UIHostingController(rootView: AnyView(page))
@@ -194,10 +202,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 item: item,
                 store: store,
                 viewModel: viewModel,
-                parent: controller,
-                onNextVideo: { [weak self] in
-                    self?.skipForward(from: item.streamId)
-                }
+                parent: controller
             )
             return cell
         }
@@ -248,14 +253,6 @@ struct VerticalPager: UIViewControllerRepresentable {
                 }
                 store.appendNextIfNeeded(near: index)
             }
-        }
-
-        func skipForward(from streamId: Int64) {
-            guard let i = store.items.firstIndex(where: { $0.streamId == streamId }) else { return }
-            store.appendNextIfNeeded(near: i)
-            guard i + 1 < store.items.count else { return }
-            controller?.scrollTo(index: i + 1, animated: true)
-            store.activeStreamId = store.items[i + 1].streamId
         }
     }
 }

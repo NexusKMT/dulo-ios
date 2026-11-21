@@ -9,7 +9,6 @@ struct FeedVideoPage: View {
     let video: VideoItem
     @ObservedObject var store: FeedStreamStore
     @ObservedObject var viewModel: FeedViewModel
-    let onNextVideo: () -> Void
 
     @StateObject private var playerState = PlayerState()
     @State private var lease: Lease<ResolvedMedia>?
@@ -21,13 +20,11 @@ struct FeedVideoPage: View {
     @State private var retryNonce = 0
     @State private var preparedUrl: String?
 
-    init(streamId: Int64, video: VideoItem, store: FeedStreamStore,
-         viewModel: FeedViewModel, onNextVideo: @escaping () -> Void) {
+    init(streamId: Int64, video: VideoItem, store: FeedStreamStore, viewModel: FeedViewModel) {
         self.streamId = streamId
         self.video = video
         self.store = store
         self.viewModel = viewModel
-        self.onNextVideo = onNextVideo
         _lease = State(initialValue: viewModel.cachedLease(for: video.id))
     }
 
@@ -71,11 +68,11 @@ struct FeedVideoPage: View {
             playerState.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             playerState.player.play()
         }
-        .task(id: video.id) { await resolveOnce() }
-        .task(id: prepareToken) { await prepareOnce() }
-        .onChange(of: skipToken) { _ in
-            if isActive && (resolutionFailed || playbackFailed) { onNextVideo() }
+        .task(id: "\(video.id)|\(store.activeStreamId)") {
+            guard store.isNearActive(streamId: streamId) else { return }
+            await resolveOnce()
         }
+        .task(id: prepareToken) { await prepareOnce() }
         .onChange(of: shouldPlay) { play in
             if play {
                 playerState.player.play()
@@ -100,21 +97,23 @@ struct FeedVideoPage: View {
     private func resolveOnce() async {
         if lease?.isFresh(nowElapsedMs: monotonicNowMs()) == true { return }
         var retries = 0
-        func handle(_ result: MediaResolution) {
+        while !Task.isCancelled {
+            let result = await viewModel.resolveMedia(id: video.id, force: false)
+            if Task.isCancelled { return }
             switch result {
             case .ready(let fresh):
                 lease = fresh
                 resolutionFailed = false
+                return
             default:
                 if shouldRetryResolution(result, retries: retries) {
                     retries += 1
-                    viewModel.resolveMedia(id: video.id, force: false, onResult: handle)
                 } else {
                     resolutionFailed = true
+                    return
                 }
             }
         }
-        viewModel.resolveMedia(id: video.id, force: false, onResult: handle)
     }
 
     // MARK: - Playback
@@ -124,15 +123,12 @@ struct FeedVideoPage: View {
         "|\(isActive ? 1 : 0)|\(retryOnActivation ? 1 : 0)|\(store.sceneActive ? 1 : 0)"
     }
 
-    private var skipToken: String {
-        "\(isActive ? 1 : 0)|\(resolutionFailed ? 1 : 0)|\(playbackFailed ? 1 : 0)"
-    }
-
     private func prepareOnce() async {
         guard let lease, lease.isFresh(nowElapsedMs: monotonicNowMs()) else {
             playerState.player.pause()
             if isActive {
-                viewModel.resolveMedia(id: video.id, force: false) { result in
+                let result = await viewModel.resolveMedia(id: video.id, force: false)
+                if !Task.isCancelled {
                     switch result {
                     case .ready(let fresh): self.lease = fresh
                     default: resolutionFailed = true
@@ -157,7 +153,8 @@ struct FeedVideoPage: View {
             if let status = await PlayerFactory.preflightStatus(url: playUrl),
                status == 403, !video.id.isEmpty, !renewAttempted {
                 renewAttempted = true
-                viewModel.resolveMedia(id: video.id, force: true) { result in
+                let result = await viewModel.resolveMedia(id: video.id, force: true)
+                if !Task.isCancelled {
                     switch result {
                     case .ready(let fresh): self.lease = fresh
                     default: playbackFailed = true

@@ -60,33 +60,35 @@ final class FeedViewModel: ObservableObject {
 
     /// Returns a fresh lease for `id`, resolving or renewing it on demand.
     /// Concurrent callers share one request; `force` bypasses both the client
-    /// lease and the server cache (used after a CDN 403). `onResult` runs on
-    /// the main actor with the specific resolution outcome.
-    func resolveMedia(id: String, force: Bool = false, onResult: ((MediaResolution) -> Void)? = nil) {
-        let now = monotonicNowMs()
+    /// lease and the server cache (used after a CDN 403).
+    @discardableResult
+    func resolveMedia(id: String, force: Bool = false) async -> MediaResolution {
         if !force, let cached = cachedLease(for: id) {
-            onResult?(.ready(cached))
-            return
+            return .ready(cached)
         }
         if let pending = inFlight[id], !force {
-            Task { onResult?(await pending.task.value) }
-            return
+            return await pending.task.value
         }
         let requestId = nextRequestId
         nextRequestId += 1
-        let task = Task { [client] in
+        let task = Task<MediaResolution, Never> { [client] in
             await client.resolveMedia(baseUrl: AppSettings.serverBaseUrl, id: id, force: force)
         }
         inFlight[id] = InFlight(requestId: requestId, task: task)
-        Task {
-            let result = await task.value
-            if inFlight[id]?.requestId == requestId {
-                inFlight.removeValue(forKey: id)
-                if case .ready(let lease) = result {
-                    resolvedMediaCache.put(key: id, lease: lease, nowElapsedMs: monotonicNowMs())
-                }
+        let result = await task.value
+        if inFlight[id]?.requestId == requestId {
+            inFlight.removeValue(forKey: id)
+            if case .ready(let lease) = result {
+                resolvedMediaCache.put(key: id, lease: lease, nowElapsedMs: monotonicNowMs())
             }
-            onResult?(result)
+        }
+        return result
+    }
+
+    /// Cancels any in-flight resolution for `id` when the page is scrolled away.
+    func cancelResolve(for id: String) {
+        if let pending = inFlight.removeValue(forKey: id) {
+            pending.task.cancel()
         }
     }
 }
