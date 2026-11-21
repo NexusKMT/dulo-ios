@@ -14,6 +14,20 @@ enum PlayerFactory {
         "Referer": douyinReferer,
     ]
 
+    /// Configures the iOS audio session for video playback so that sound
+    /// is routed through speakers even when the device hardware mute switch is on.
+    static func configureAudioSession() {
+        #if canImport(AVFAudio)
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .moviePlayback)
+            try session.setActive(true)
+        } catch {
+            NSLog("[PlayerFactory] Failed to configure AVAudioSession: %@", error.localizedDescription)
+        }
+        #endif
+    }
+
     /// One item per prepare; the asset carries the CDN headers. Resuming after
     /// a lease renewal replaces the item, never mutates the old one.
     static func makeItem(url: URL) -> AVPlayerItem {

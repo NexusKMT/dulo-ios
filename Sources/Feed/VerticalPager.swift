@@ -129,7 +129,11 @@ struct VerticalPager: UIViewControllerRepresentable {
             let next = store.items[i + 1]
             pager?.setViewControllers(
                 [pageController(at: i + 1)], direction: .forward, animated: true
-            )
+            ) { [weak self] completed in
+                if completed {
+                    self?.evictFarPages(keeping: i + 1)
+                }
+            }
             store.activeStreamId = next.streamId
         }
     }

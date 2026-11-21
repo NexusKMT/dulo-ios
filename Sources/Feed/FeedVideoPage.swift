@@ -65,8 +65,7 @@ struct FeedVideoPage: View {
         }
         .clipped()
         .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification)) { note in
-            guard isImagePost,
-                  let item = note.object as? AVPlayerItem,
+            guard let item = note.object as? AVPlayerItem,
                   item === playerState.player.currentItem else { return }
             playerState.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             playerState.player.play()
@@ -84,6 +83,7 @@ struct FeedVideoPage: View {
         }
         .onDisappear {
             store.setKeepAwake(false, for: streamId)
+            playerState.player.pause()
         }
         .onAppear {
             playerState.onPlaybackError = { [self] error in
@@ -198,15 +198,23 @@ private struct ImagePostPager: View {
 
     var body: some View {
         TabView {
-            ForEach(urls, id: \.self) { url in
-                AsyncImage(url: URL(string: url)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .failure:
-                        Color.black
-                    default:
-                        Color.black
+            ForEach(Array(urls.enumerated()), id: \.offset) { _, url in
+                ZStack {
+                    Color.black
+                    AsyncImage(url: URL(string: url)) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .failure:
+                            Color.black
+                        case .empty:
+                            ProgressView()
+                                .tint(.white)
+                        @unknown default:
+                            Color.black
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

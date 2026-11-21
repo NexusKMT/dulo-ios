@@ -24,6 +24,7 @@ final class PlayerState: ObservableObject {
 
     init() {
         player = AVPlayer()
+        player.automaticallyWaitsToMinimizeStalling = true
 
         timeObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor in
@@ -31,7 +32,7 @@ final class PlayerState: ObservableObject {
             }
         }
 
-        itemObservation = player.observe(\.currentItem, options: [.new]) { [weak self] player, _ in
+        itemObservation = player.observe(\.currentItem, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.statusObservation?.invalidate()
@@ -54,6 +55,15 @@ final class PlayerState: ObservableObject {
                 }
             }
         }
+    }
+
+    deinit {
+        timeObservation?.invalidate()
+        itemObservation?.invalidate()
+        statusObservation?.invalidate()
+        sizeObservation?.invalidate()
+        player.pause()
+        player.replaceCurrentItem(with: nil)
     }
 
     /// Wide videos keep their aspect ratio (FIT); tall ones fill (ZOOM).

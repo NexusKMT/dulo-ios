@@ -66,7 +66,7 @@ struct MediaClient {
         }
         var url = base.appendingPathComponent("resolve").appendingPathComponent(id)
         if force {
-            url = url.appending(queryItems: [URLQueryItem(name: "force", value: "1")])
+            url = url.appendingQueryItems([URLQueryItem(name: "force", value: "1")])
         }
         let data: Data
         let response: URLResponse
@@ -100,9 +100,11 @@ struct MediaClient {
 }
 
 private extension URL {
-    func appending(queryItems: [URLQueryItem]) -> URL {
+    func appendingQueryItems(_ queryItems: [URLQueryItem]) -> URL {
         var components = URLComponents(url: self, resolvingAgainstBaseURL: false)
-        components?.queryItems = queryItems
+        var existing = components?.queryItems ?? []
+        existing.append(contentsOf: queryItems)
+        components?.queryItems = existing
         return components?.url ?? self
     }
 }

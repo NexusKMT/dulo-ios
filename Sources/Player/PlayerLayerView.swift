@@ -18,9 +18,15 @@ struct PlayerLayerView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PlayerLayerContainer, context: Context) {
-        view.playerLayer.player = player
-        view.playerLayer.videoGravity = videoGravity
-        view.isHidden = isHidden
+        if view.playerLayer.player !== player {
+            view.playerLayer.player = player
+        }
+        if view.playerLayer.videoGravity != videoGravity {
+            view.playerLayer.videoGravity = videoGravity
+        }
+        if view.isHidden != isHidden {
+            view.isHidden = isHidden
+        }
     }
 
     final class PlayerLayerContainer: UIView {
@@ -29,7 +35,10 @@ struct PlayerLayerView: UIViewRepresentable {
 
         override func layoutSubviews() {
             super.layoutSubviews()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             playerLayer.frame = bounds
+            CATransaction.commit()
         }
     }
 }
