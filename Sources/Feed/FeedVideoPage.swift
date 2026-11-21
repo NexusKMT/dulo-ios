@@ -57,7 +57,7 @@ struct FeedVideoPage: View {
     private var playUrl: String? {
         switch media {
         case .video(let url, _, _, _): return url
-        case .images(_, let music): return music
+        case .images(_, let music, _): return music
         case nil: return nil
         }
     }
@@ -65,8 +65,8 @@ struct FeedVideoPage: View {
     var body: some View {
         ZStack {
             Color.black
-            if case .images(let urls, _)? = media {
-                ImagePostPager(urls: urls, isActive: isActive)
+            if case .images(_, _, let slides)? = media {
+                ImagePostPager(slides: slides, isActive: isActive)
             } else {
                 PlayerLayerView(
                     player: playerState.player,
@@ -213,43 +213,139 @@ struct FeedVideoPage: View {
     }
 }
 
-/// A photo post: horizontal paging through its images, fitting the screen without cropping.
+/// Dedicated lightweight motion video loop controller for Live Photo posts.
+/// Uses AVQueuePlayer + AVPlayerLooper for zero-freeze, sample-accurate, gapless looping.
+/// Keeps audio strictly muted to avoid clashing with the post's master background music.
+/// Exactly ONE instance is maintained per post, attaching only to the active slide.
+@MainActor
+final class MotionLoopPlayerController: ObservableObject {
+    let player = AVQueuePlayer()
+    private var looper: AVPlayerLooper?
+    private var currentUrl: String?
+
+    @Published private(set) var isReadyForDisplay = false
+
+    init() {
+        player.isMuted = true
+        player.automaticallyWaitsToMinimizeStalling = true
+    }
+
+    func play(urlString: String) {
+        if currentUrl == urlString {
+            player.play()
+            return
+        }
+        cleanup()
+        guard let url = URL(string: urlString) else { return }
+
+        currentUrl = urlString
+        isReadyForDisplay = false
+
+        let asset = AVURLAsset(url: url, options: [
+            "AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders
+        ])
+        let templateItem = AVPlayerItem(asset: asset)
+
+        // Disable audio tracks to avoid CoreAudio resource allocation
+        for track in templateItem.tracks where track.assetTrack?.mediaType == .audio {
+            track.isEnabled = false
+        }
+
+        looper = AVPlayerLooper(player: player, templateItem: templateItem)
+        player.play()
+    }
+
+    func pause() {
+        player.pause()
+    }
+
+    func cleanup() {
+        player.pause()
+        looper?.disableLooping()
+        looper = nil
+        player.removeAllItems()
+        currentUrl = nil
+        isReadyForDisplay = false
+    }
+
+    func markReady() {
+        isReadyForDisplay = true
+    }
+
+    deinit {
+        player.pause()
+        looper?.disableLooping()
+        player.removeAllItems()
+    }
+}
+
+/// A photo/Live Photo post: horizontal paging through its slides, fitting the screen without cropping.
 /// Backed by global in-memory ImagePipeline, guaranteeing instant 0ms hits on back-swipes,
 /// no ProgressView spinners, and strictly windowed sliding-cache prefetching.
+/// For Live Photos (media_type: 42), mounts a single floating AVPlayerLooper onto the active slide
+/// while the post's master audio player plays the continuous global background music.
 private struct ImagePostPager: View {
-    let urls: [String]
+    let slides: [GallerySlide]
     let isActive: Bool
 
     @State private var currentIndex: Int = 0
+    @StateObject private var motionController = MotionLoopPlayerController()
 
     var body: some View {
         TabView(selection: $currentIndex) {
-            ForEach(Array(urls.enumerated()), id: \.offset) { index, urlString in
-                if let url = URL(string: urlString) {
-                    FastRemoteImage(
-                        url: url,
-                        shouldLoad: shouldLoad(at: index)
-                    )
-                    .tag(index)
+            ForEach(Array(slides.enumerated()), id: \.offset) { index, slide in
+                ZStack {
+                    Color.black
+
+                    // Base Layer: Static downsampled cover image (0ms display)
+                    if let url = URL(string: slide.imageUrl) {
+                        FastRemoteImage(
+                            url: url,
+                            shouldLoad: shouldLoad(at: index)
+                        )
+                    }
+
+                    // Motion Layer: Attached only to the active slide if it's a Live Photo
+                    if slide.isLivePhoto, index == currentIndex, isActive {
+                        PlayerLayerView(
+                            player: motionController.player,
+                            videoGravity: .resizeAspect,
+                            isHidden: !motionController.isReadyForDisplay,
+                            onReadyForDisplay: {
+                                withAnimation(.linear(duration: 0.12)) {
+                                    motionController.markReady()
+                                }
+                            }
+                        )
+                    }
                 }
+                .tag(index)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
         .onChange(of: currentIndex) { index in
             schedulePrefetch(around: index)
+            updateMotionLoop(for: index)
         }
         .onChange(of: isActive) { active in
             if active {
                 schedulePrefetch(around: currentIndex)
+                updateMotionLoop(for: currentIndex)
+            } else {
+                motionController.pause()
             }
         }
         .onAppear {
             if isActive {
                 schedulePrefetch(around: currentIndex)
-            } else if let first = urls.first, let url = URL(string: first) {
+                updateMotionLoop(for: currentIndex)
+            } else if let first = slides.first, let url = URL(string: first.imageUrl) {
                 // When vertically prefetching (N+1), only prefetch the cover image!
                 ImagePipeline.shared.prefetch(urls: [url])
             }
+        }
+        .onDisappear {
+            motionController.cleanup()
         }
     }
 
@@ -266,8 +362,21 @@ private struct ImagePostPager: View {
         guard isActive else { return }
         // Pre-warm the next image in the scroll path
         let nextIndex = index + 1
-        if nextIndex < urls.count, let url = URL(string: urls[nextIndex]) {
+        if nextIndex < slides.count, let url = URL(string: slides[nextIndex].imageUrl) {
             ImagePipeline.shared.prefetch(urls: [url])
+        }
+    }
+
+    private func updateMotionLoop(for index: Int) {
+        guard isActive, index >= 0, index < slides.count else {
+            motionController.cleanup()
+            return
+        }
+        let slide = slides[index]
+        if let motionUrl = slide.motionVideoUrl {
+            motionController.play(urlString: motionUrl)
+        } else {
+            motionController.cleanup()
         }
     }
 }

@@ -88,7 +88,18 @@ struct MediaClient {
         }
         let media: ResolvedMedia
         if !body.images.isEmpty {
-            media = .images(urls: body.images, music: body.music)
+            let slides: [GallerySlide]
+            if let serverSlides = body.slides, !serverSlides.isEmpty {
+                slides = serverSlides.compactMap { s in
+                    guard let img = s.imageUrl, !img.isEmpty else { return nil }
+                    return GallerySlide(id: s.id, imageUrl: img, motionVideoUrl: s.videoUrl)
+                }
+            } else {
+                slides = body.images.enumerated().map { (idx, url) in
+                    GallerySlide(id: String(idx), imageUrl: url, motionVideoUrl: nil)
+                }
+            }
+            media = .images(urls: body.images, music: body.music, slides: slides)
         } else if let playUrl = body.url, !playUrl.isEmpty {
             media = .video(url: playUrl, cover: body.cover, width: body.width ?? 0, height: body.height ?? 0)
         } else {
