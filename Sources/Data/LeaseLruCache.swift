@@ -14,7 +14,7 @@ final class LeaseLruCache<T> {
         }
     }
 
-    static let defaultMaxSize = 128
+    static var defaultMaxSize: Int { 128 }
 
     private let maxSize: Int
     private var map: [String: Node] = [:]
@@ -41,7 +41,7 @@ final class LeaseLruCache<T> {
 
     /// Removes expired leases first, then keeps the most recently used `maxSize`.
     func put(key: String, lease: Lease<T>, nowElapsedMs: Int64) {
-        pruneExpired(nowElapsedMs)
+        pruneExpired(nowElapsedMs: nowElapsedMs)
         if let existing = map[key] { unlink(existing) }
         let node = Node(key: key, lease: lease)
         map[key] = node

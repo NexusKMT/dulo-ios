@@ -15,5 +15,5 @@ struct Lease<T> {
     }
 
     /// Renew this far before the server-declared expiry.
-    static let defaultMarginMs: Int64 = 60_000
+    static var defaultMarginMs: Int64 { 60_000 }
 }

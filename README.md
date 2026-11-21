@@ -25,7 +25,8 @@ IPA 是 ad-hoc 签名，TrollStore 安装时自动 fakesign。
 brew install xcodegen
 xcodegen generate
 open Dulo.xcodeproj        # 需要完整 Xcode
-swift test                 # 无 Xcode 也可：CLT + SPM 跑核心逻辑单测
+swift build --target DuloCore   # 无 Xcode：CLT 只做核心模块编译检查
+# 单测需要 XCTest（CLT 不带），由 CI 在 iOS 模拟器上跑
 ```
 
 ## 安装
