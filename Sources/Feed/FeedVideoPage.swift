@@ -80,7 +80,7 @@ struct FeedVideoPage: View {
                 )
 
                 if let coverUrl = videoCoverUrl, let url = URL(string: coverUrl), !isFirstFrameRendered {
-                    BulletproofRemoteImage(url: url, coverPlaceholderUrl: nil)
+                    BulletproofRemoteImage(url: url)
                         .transition(.opacity)
                 }
             }
@@ -229,9 +229,10 @@ struct FeedVideoPage: View {
 final class MotionLoopPlayerController: ObservableObject {
     let player = AVQueuePlayer()
     private var looper: AVPlayerLooper?
-    private var currentUrl: String?
     private var readyWatchdogTask: Task<Void, Never>?
+    private var currentTransitionId = UUID()
 
+    @Published private(set) var activeUrl: String? = nil
     @Published private(set) var isReadyForDisplay = false
 
     init() {
@@ -240,14 +241,16 @@ final class MotionLoopPlayerController: ObservableObject {
     }
 
     func play(urlString: String) {
-        if currentUrl == urlString {
+        if activeUrl == urlString {
             player.play()
             return
         }
-        cleanup()
+        reset()
         guard let url = URL(string: urlString) else { return }
 
-        currentUrl = urlString
+        let transitionId = UUID()
+        currentTransitionId = transitionId
+        activeUrl = urlString
         isReadyForDisplay = false
 
         let playbackUrl = LocalMediaProxyServer.shared.proxyUrl(for: url)
@@ -266,15 +269,17 @@ final class MotionLoopPlayerController: ObservableObject {
 
         // 180ms Watchdog Fallback: guarantees isReadyForDisplay flips to true
         // even if initial KVO was delayed or swallowed during offscreen layout
-        readyWatchdogTask = Task { @MainActor in
+        readyWatchdogTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 180_000_000)
-            if !Task.isCancelled && !self.isReadyForDisplay {
+            guard let self = self, !Task.isCancelled else { return }
+            if self.currentTransitionId == transitionId && !self.isReadyForDisplay {
                 self.isReadyForDisplay = true
             }
         }
     }
 
-    func markReady() {
+    func markReady(for urlString: String) {
+        guard activeUrl == urlString else { return }
         readyWatchdogTask?.cancel()
         readyWatchdogTask = nil
         isReadyForDisplay = true
@@ -284,15 +289,20 @@ final class MotionLoopPlayerController: ObservableObject {
         player.pause()
     }
 
-    func cleanup() {
+    func reset() {
+        currentTransitionId = UUID()
         readyWatchdogTask?.cancel()
         readyWatchdogTask = nil
         player.pause()
         looper?.disableLooping()
         looper = nil
         player.removeAllItems()
-        currentUrl = nil
+        activeUrl = nil
         isReadyForDisplay = false
+    }
+
+    func cleanup() {
+        reset()
     }
 
     deinit {
@@ -324,22 +334,21 @@ private struct ImagePostPager: View {
 
                     // Base Layer: Static downsampled cover image (Always visible at 0ms, never goes black!)
                     if let url = URL(string: slide.imageUrl) {
-                        BulletproofRemoteImage(
-                            url: url,
-                            coverPlaceholderUrl: slides.first.flatMap { URL(string: $0.imageUrl) }
-                        )
+                        BulletproofRemoteImage(url: url)
                     }
 
-                    // Motion Layer: Attached only to the active slide if it's a Live Photo
-                    if slide.isLivePhoto, index == currentIndex, isActive {
+                    // Motion Layer: Attached ONLY when this slide is active AND motionController is actively playing this slide's video
+                    if slide.isLivePhoto,
+                       index == currentIndex,
+                       isActive,
+                       let motionUrl = slide.motionVideoUrl,
+                       motionController.activeUrl == motionUrl {
                         PlayerLayerView(
                             player: motionController.player,
                             videoGravity: .resizeAspect,
                             isHidden: !motionController.isReadyForDisplay,
                             onReadyForDisplay: {
-                                withAnimation(.linear(duration: 0.12)) {
-                                    motionController.markReady()
-                                }
+                                motionController.markReady(for: motionUrl)
                             }
                         )
                     }
@@ -348,13 +357,17 @@ private struct ImagePostPager: View {
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
-        // Deterministic lifecycle trigger: reliably fires Slide 0 autoplay on initial post appearance
+        // Immediate synchronous reset the instant page index changes
+        .onChange(of: currentIndex) { _ in
+            motionController.reset()
+        }
+        // Deterministic lifecycle trigger: reliably fires autoplay on initial appearance or page switch
         .task(id: "\(isActive)-\(currentIndex)") {
             if isActive {
                 ImagePipeline.shared.pin(urls: slideUrls)
                 scheduleBidirectionalPrefetch(around: currentIndex)
-                // 80ms debounce so user momentum swipe is buttery smooth
-                try? await Task.sleep(nanoseconds: 80_000_000)
+                // 50ms debounce so user momentum swipe doesn't thrash decoder
+                try? await Task.sleep(nanoseconds: 50_000_000)
                 if !Task.isCancelled {
                     updateMotionLoop(for: currentIndex)
                 }
@@ -384,38 +397,33 @@ private struct ImagePostPager: View {
 
     private func updateMotionLoop(for index: Int) {
         guard isActive, index >= 0, index < slides.count else {
-            motionController.cleanup()
+            motionController.reset()
             return
         }
         let slide = slides[index]
         if let motionUrl = slide.motionVideoUrl {
             motionController.play(urlString: motionUrl)
         } else {
-            motionController.cleanup()
+            motionController.reset()
         }
     }
 }
 
 /// Bulletproof remote image view:
 /// 1. Synchronously probes L1 RAM in init() for instantaneous 0ms hits on reuse/back-swipe.
-/// 2. If L1 is empty (e.g. after rapid swipe), immediately displays the first slide's cover placeholder (NEVER black!).
-/// 3. Asynchronously loads from L2 flash disk cache (<2ms) or network, smoothly presenting the full image.
+/// 2. Asynchronously loads from L2 flash disk cache (<2ms) or network, smoothly presenting the image.
+/// 3. Never falls back to foreign slide images so each slide is purely its own content.
 private struct BulletproofRemoteImage: View {
     let url: URL
-    let coverPlaceholderUrl: URL?
 
     @State private var image: UIImage?
 
-    init(url: URL, coverPlaceholderUrl: URL?) {
+    init(url: URL) {
         self.url = url
-        self.coverPlaceholderUrl = coverPlaceholderUrl
 
         // Synchronous probe: if image is in L1 or pinned, present in frame 0!
         if let cached = ImagePipeline.shared.cachedImage(for: url) {
             _image = State(initialValue: cached)
-        } else if let coverUrl = coverPlaceholderUrl, let coverCached = ImagePipeline.shared.cachedImage(for: coverUrl) {
-            // Placeholder fallback: display first slide's cover so user NEVER sees black!
-            _image = State(initialValue: coverCached)
         }
     }
 

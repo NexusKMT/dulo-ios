@@ -24,7 +24,6 @@ struct PlayerLayerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerLayerContainer {
         let view = PlayerLayerContainer()
-        view.backgroundColor = .clear
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         view.playerLayer.player = player
@@ -48,7 +47,12 @@ struct PlayerLayerView: UIViewRepresentable {
     func updateUIView(_ view: PlayerLayerContainer, context: Context) {
         context.coordinator.onReadyForDisplay = onReadyForDisplay
         if view.playerLayer.player !== player {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             view.playerLayer.player = player
+            CATransaction.commit()
+
+            context.coordinator.observer?.invalidate()
             context.coordinator.observer = view.playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { layer, _ in
                 if layer.isReadyForDisplay {
                     Task { @MainActor in
@@ -65,15 +69,56 @@ struct PlayerLayerView: UIViewRepresentable {
         }
         let targetAlpha: CGFloat = isHidden ? 0.0 : 1.0
         if view.alpha != targetAlpha {
-            UIView.animate(withDuration: 0.12) {
-                view.alpha = targetAlpha
+            if isHidden {
+                // Instantly hide and disable actions when transitioning away so no stale frame lingers
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                view.alpha = 0.0
+                CATransaction.commit()
+            } else {
+                // Smooth cross-fade when hardware decoder confirms frame 0 is ready
+                UIView.animate(withDuration: 0.12, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
+                    view.alpha = 1.0
+                }
             }
         }
+    }
+
+    static func dismantleUIView(_ view: PlayerLayerContainer, coordinator: Coordinator) {
+        coordinator.observer?.invalidate()
+        coordinator.observer = nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.playerLayer.player = nil
+        view.alpha = 0.0
+        CATransaction.commit()
     }
 
     final class PlayerLayerContainer: UIView {
         override class var layerClass: AnyClass { AVPlayerLayer.self }
         var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            setupLayer()
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            setupLayer()
+        }
+
+        private func setupLayer() {
+            backgroundColor = .clear
+            // Strip out implicit CALayer animations to prevent 250ms stretch or morph bugs
+            playerLayer.actions = [
+                "contents": NSNull(),
+                "bounds": NSNull(),
+                "position": NSNull(),
+                "opacity": NSNull(),
+                "sublayers": NSNull()
+            ]
+        }
 
         override func layoutSubviews() {
             super.layoutSubviews()
