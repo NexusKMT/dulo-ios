@@ -20,6 +20,7 @@ struct FeedScreen: View {
                 VerticalPager(store: store, viewModel: viewModel)
                     .ignoresSafeArea()
                 #endif
+                FeedDebugHUD(store: store)
             }
             if viewModel.videos.isEmpty && !viewModel.isLoading {
                 statusOverlay
@@ -90,5 +91,73 @@ struct FeedScreen: View {
                 #endif
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// Floating debug HUD displaying video identity (tap to copy with haptic & visual feedback) and title.
+private struct FeedDebugHUD: View {
+    @ObservedObject var store: FeedStreamStore
+    @State private var copied = false
+
+    var body: some View {
+        if let video = store.items.first(where: { $0.streamId == store.activeStreamId })?.video {
+            VStack(alignment: .leading, spacing: 3) {
+                // ID Row: tap to copy to clipboard with haptic feedback
+                Button {
+                    copyId(video.id)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(copied ? Color.green : Color.white.opacity(0.6))
+                        Text(copied ? "已复制" : video.id)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(copied ? Color.green : Color.white.opacity(0.85))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(copied ? Color.green.opacity(0.2) : Color.white.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                // Title Row: clean display without blocking gestures
+                if !video.title.isEmpty {
+                    Text(video.title)
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .padding(.horizontal, 2)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: 280, alignment: .leading)
+            .background(Color.black.opacity(0.55))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .padding(.leading, 16)
+            .padding(.bottom, 36)
+        }
+    }
+
+    private func copyId(_ id: String) {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = id
+        let generator = UINotificationFeedbackGenerator()
+        generator.notificationOccurred(.success)
+        #endif
+        withAnimation(.easeInOut(duration: 0.15)) {
+            copied = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                copied = false
+            }
+        }
     }
 }
