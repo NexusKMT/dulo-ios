@@ -26,5 +26,13 @@ struct ResolveResponse: Decodable {
     let music: String?
     let ttlSeconds: Int64?
 
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        images = (try? c.decodeIfPresent([String].self, forKey: .images)) ?? []
+        music = try c.decodeIfPresent(String.self, forKey: .music)
+        ttlSeconds = try c.decodeIfPresent(Int64.self, forKey: .ttlSeconds)
+    }
+
     private enum CodingKeys: String, CodingKey { case url, images, music, ttlSeconds }
 }

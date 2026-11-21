@@ -11,4 +11,39 @@ final class MediaResolutionTests: XCTestCase {
         XCTAssertFalse(shouldRetryResolution(.notFound, retries: 0))
         XCTAssertFalse(shouldRetryResolution(.httpFailure(statusCode: 502), retries: 0))
     }
+
+    func testDecodeVideoResolveResponseWithoutImagesField() throws {
+        let json = """
+        {
+            "type": "video",
+            "url": "https://example.com/video.mp4",
+            "expiresAt": 1700000000,
+            "ttlSeconds": 1800,
+            "cached": true
+        }
+        """.data(using: .utf8)!
+        let resp = try JSONDecoder().decode(ResolveResponse.self, from: json)
+        XCTAssertEqual(resp.url, "https://example.com/video.mp4")
+        XCTAssertEqual(resp.images, [])
+        XCTAssertNil(resp.music)
+        XCTAssertEqual(resp.ttlSeconds, 1800)
+    }
+
+    func testDecodeImageResolveResponseWithImagesField() throws {
+        let json = """
+        {
+            "type": "images",
+            "images": ["https://example.com/1.jpg", "https://example.com/2.jpg"],
+            "music": "https://example.com/bgm.mp3",
+            "expiresAt": 1700000000,
+            "ttlSeconds": 1800,
+            "cached": false
+        }
+        """.data(using: .utf8)!
+        let resp = try JSONDecoder().decode(ResolveResponse.self, from: json)
+        XCTAssertNil(resp.url)
+        XCTAssertEqual(resp.images.count, 2)
+        XCTAssertEqual(resp.music, "https://example.com/bgm.mp3")
+        XCTAssertEqual(resp.ttlSeconds, 1800)
+    }
 }
