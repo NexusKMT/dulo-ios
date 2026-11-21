@@ -28,11 +28,12 @@ enum PlayerFactory {
         #endif
     }
 
-    /// One item per prepare; the asset carries the CDN headers. Resuming after
-    /// a lease renewal replaces the item, never mutates the old one.
-    static func makeItem(url: URL) -> AVPlayerItem {
+    /// One item per prepare; routed through LocalMediaProxyServer for 0ms cached
+    /// streaming and chunk caching. Resuming after a lease renewal replaces the item.
+    static func makeItem(url: URL, cacheKey: String? = nil) -> AVPlayerItem {
+        let playbackUrl = LocalMediaProxyServer.shared.proxyUrl(for: url, cacheKey: cacheKey)
         let asset = AVURLAsset(
-            url: url,
+            url: playbackUrl,
             options: ["AVURLAssetHTTPHeaderFieldsKey": httpHeaders]
         )
         return AVPlayerItem(asset: asset)

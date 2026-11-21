@@ -23,6 +23,7 @@ struct DuloApp: App {
 
     init() {
         PlayerFactory.configureAudioSession()
+        LocalMediaProxyServer.shared.start()
     }
 
     var body: some Scene {

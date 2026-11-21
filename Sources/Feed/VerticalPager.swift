@@ -223,10 +223,13 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let videoId = store.items[index].video.id
                 Task { [weak viewModel] in
                     let result = await viewModel?.resolveMedia(id: videoId, force: false)
-                    if case .ready(let lease) = result,
-                       let coverStr = lease.value.coverImageUrl,
-                       let url = URL(string: coverStr) {
-                        ImagePipeline.shared.prefetch(urls: [url])
+                    if case .ready(let lease) = result {
+                        if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
+                            ImagePipeline.shared.prefetch(urls: [url])
+                        }
+                        if case .video(let playUrl, _, _, _) = lease.value, let url = URL(string: playUrl) {
+                            MediaPreloadManager.shared.preload(url: url, key: videoId)
+                        }
                     }
                 }
             }
@@ -285,10 +288,13 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let videoId = store.items[target].video.id
                 Task { [weak viewModel] in
                     let result = await viewModel?.resolveMedia(id: videoId, force: false)
-                    if case .ready(let lease) = result,
-                       let coverStr = lease.value.coverImageUrl,
-                       let url = URL(string: coverStr) {
-                        ImagePipeline.shared.prefetch(urls: [url])
+                    if case .ready(let lease) = result {
+                        if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
+                            ImagePipeline.shared.prefetch(urls: [url])
+                        }
+                        if case .video(let playUrl, _, _, _) = lease.value, let url = URL(string: playUrl) {
+                            MediaPreloadManager.shared.preload(url: url, key: videoId)
+                        }
                     }
                 }
             }

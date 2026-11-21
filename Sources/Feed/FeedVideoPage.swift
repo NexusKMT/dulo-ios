@@ -102,8 +102,16 @@ struct FeedVideoPage: View {
                 playerState.player.pause()
             }
         }
+        .onChange(of: isActive) { active in
+            if active {
+                if !video.id.isEmpty { MediaCacheStorage.shared.pin(key: "k_\(video.id)") }
+            } else {
+                if !video.id.isEmpty { MediaCacheStorage.shared.unpin(key: "k_\(video.id)") }
+            }
+        }
         .onDisappear {
             playerState.player.pause()
+            if !video.id.isEmpty { MediaCacheStorage.shared.unpin(key: "k_\(video.id)") }
         }
         .onAppear {
             playerState.onPlaybackError = { [self] error in
@@ -185,12 +193,12 @@ struct FeedVideoPage: View {
                 return
             }
             let resumeAt = (preparedUrl == nil) ? CMTime.zero : playerState.player.currentTime()
-            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL))
+            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL, cacheKey: video.id))
             preparedUrl = playUrl
             if resumeAt.seconds > 0 { await playerState.player.seek(to: resumeAt) }
         } else if isActive, playerState.player.currentItem?.error != nil {
             // Retry a failed prepare; deferred to activation for neighbours.
-            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL))
+            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL, cacheKey: video.id))
         }
         if shouldPlay {
             playerState.player.play()
@@ -241,7 +249,8 @@ final class MotionLoopPlayerController: ObservableObject {
         currentUrl = urlString
         isReadyForDisplay = false
 
-        let asset = AVURLAsset(url: url, options: [
+        let playbackUrl = LocalMediaProxyServer.shared.proxyUrl(for: url)
+        let asset = AVURLAsset(url: playbackUrl, options: [
             "AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders
         ])
         let templateItem = AVPlayerItem(asset: asset)
