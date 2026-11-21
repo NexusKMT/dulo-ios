@@ -36,7 +36,10 @@ enum PlayerFactory {
             url: playbackUrl,
             options: ["AVURLAssetHTTPHeaderFieldsKey": httpHeaders]
         )
-        return AVPlayerItem(asset: asset)
+        let item = AVPlayerItem(asset: asset)
+        // Set buffer duration to 3.0s to avoid high RAM footprint on low-spec hardware (2GB A9)
+        item.preferredForwardBufferDuration = 3.0
+        return item
     }
 
     /// Deterministic 403 detection before playback: a one-byte ranged GET

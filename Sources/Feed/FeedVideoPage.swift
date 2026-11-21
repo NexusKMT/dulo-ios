@@ -30,6 +30,8 @@ struct FeedVideoPage: View {
     }
 
     private var isActive: Bool { store.activeStreamId == streamId }
+    private var isPrewarm: Bool { store.prewarmStreamId == streamId }
+    private var shouldHoldPlayerItem: Bool { isActive || isPrewarm }
     private var shouldPlay: Bool { isActive && store.sceneActive }
 
     private var media: ResolvedMedia? { lease?.value }
@@ -86,13 +88,6 @@ struct FeedVideoPage: View {
             }
         }
         .clipped()
-        .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification)) { note in
-            guard let item = note.object as? AVPlayerItem,
-                  item === playerState.player.currentItem else { return }
-            guard isActive else { return }
-            playerState.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-            playerState.player.play()
-        }
         .task(id: video.id) { await resolveOnce() }
         .task(id: prepareToken) { await prepareOnce() }
         .onChange(of: shouldPlay) { play in
@@ -149,10 +144,20 @@ struct FeedVideoPage: View {
 
     private var prepareToken: String {
         "\(playUrl ?? "-")|\(lease?.expiresAtElapsedMs ?? 0)|\(retryNonce)" +
-        "|\(isActive ? 1 : 0)|\(retryOnActivation ? 1 : 0)|\(store.sceneActive ? 1 : 0)"
+        "|\(shouldHoldPlayerItem ? 1 : 0)|\(isActive ? 1 : 0)|\(store.sceneActive ? 1 : 0)"
     }
 
     private func prepareOnce() async {
+        // Strict hardware decoder budget (Max 2 on A9): release decoder if neither active nor prewarm
+        guard shouldHoldPlayerItem else {
+            if playerState.player.currentItem != nil {
+                playerState.player.pause()
+                playerState.clearItem()
+                preparedUrl = nil
+            }
+            return
+        }
+
         guard let lease, lease.isFresh(nowElapsedMs: monotonicNowMs()) else {
             playerState.player.pause()
             if isActive {
@@ -170,35 +175,17 @@ struct FeedVideoPage: View {
             playerState.player.pause()
             return
         }
-        guard URL(string: playUrl) != nil else {
+        guard let playURL = URL(string: playUrl) else {
             playbackFailed = true
             return
         }
-        let playURL = URL(string: playUrl)!
         let needsNewItem = (playUrl != preparedUrl) || (playerState.player.currentItem == nil)
         if needsNewItem {
-            // 403 -> renew the lease with force=1 once, mirroring the
-            // Android player-error path. Preflight keeps this deterministic:
-            // AVFoundation hides HTTP status codes in its errors.
-            if let status = await PlayerFactory.preflightStatus(url: playUrl),
-               status == 403, !video.id.isEmpty, !renewAttempted {
-                renewAttempted = true
-                let result = await viewModel.resolveMedia(id: video.id, force: true)
-                if !Task.isCancelled {
-                    switch result {
-                    case .ready(let fresh): self.lease = fresh
-                    default: playbackFailed = true
-                    }
-                }
-                return
-            }
-            let resumeAt = (preparedUrl == nil) ? CMTime.zero : playerState.player.currentTime()
-            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL, cacheKey: video.id))
+            // Optimistic playback: 0ms TTFF from local proxy/disk cache without blocking preflight!
+            playerState.setItem(url: playURL, cacheKey: video.id)
             preparedUrl = playUrl
-            if resumeAt.seconds > 0 { await playerState.player.seek(to: resumeAt) }
         } else if isActive, playerState.player.currentItem?.error != nil {
-            // Retry a failed prepare; deferred to activation for neighbours.
-            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL, cacheKey: video.id))
+            playerState.setItem(url: playURL, cacheKey: video.id)
         }
         if shouldPlay {
             playerState.player.play()
@@ -215,6 +202,14 @@ struct FeedVideoPage: View {
         if retryCount < 2 {
             retryCount += 1
             retryNonce += 1
+            Task {
+                // Reactive 403 / failure token renewal
+                let result = await viewModel.resolveMedia(id: video.id, force: true)
+                if case .ready(let fresh) = result {
+                    self.lease = fresh
+                    await self.prepareOnce()
+                }
+            }
         } else {
             playbackFailed = true
         }

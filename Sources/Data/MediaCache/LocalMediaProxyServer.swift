@@ -128,6 +128,15 @@ public final class LocalMediaProxyServer {
             var nosigpipe: Int32 = 1
             setsockopt(clientFd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
 
+            // Disable Nagle's algorithm (TCP_NODELAY) for instant packet dispatch
+            var nodelay: Int32 = 1
+            setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
+
+            // Set send/receive buffer sizes to 256KB for high-throughput loopback transfers
+            var bufSize: Int32 = 256 * 1024
+            setsockopt(clientFd, SOL_SOCKET, SO_SNDBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(clientFd, SOL_SOCKET, SO_RCVBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
+
             // Set socket timeouts to 15 seconds
             var tv = timeval(tv_sec: 15, tv_usec: 0)
             setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))

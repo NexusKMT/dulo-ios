@@ -11,7 +11,8 @@ import UIKit
 /// control layer itself. Port of the Android `PlayerState`.
 @MainActor
 final class PlayerState: ObservableObject {
-    let player: AVPlayer
+    let player: AVQueuePlayer
+    private var looper: AVPlayerLooper?
 
     @Published private(set) var isPlaying = false
     @Published private(set) var presentationSize: CGSize = .zero
@@ -26,9 +27,10 @@ final class PlayerState: ObservableObject {
     private var sizeObservation: NSKeyValueObservation?
 
     init() {
-        player = AVPlayer()
-        player.automaticallyWaitsToMinimizeStalling = true
+        player = AVQueuePlayer()
+        player.automaticallyWaitsToMinimizeStalling = false
         player.preventsDisplaySleepDuringVideoPlayback = true
+        player.actionAtItemEnd = .none
 
         timeObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor in
@@ -61,13 +63,31 @@ final class PlayerState: ObservableObject {
         }
     }
 
+    /// Sets up seamless, zero-gap looping via AVPlayerLooper without recreating the player.
+    func setItem(url: URL, cacheKey: String?) {
+        looper?.disableLooping()
+        looper = nil
+        player.removeAllItems()
+
+        let item = PlayerFactory.makeItem(url: url, cacheKey: cacheKey)
+        looper = AVPlayerLooper(player: player, templateItem: item)
+    }
+
+    /// Clears the active item and frees the VideoToolbox hardware decoder.
+    func clearItem() {
+        looper?.disableLooping()
+        looper = nil
+        player.removeAllItems()
+    }
+
     deinit {
         timeObservation?.invalidate()
         itemObservation?.invalidate()
         statusObservation?.invalidate()
         sizeObservation?.invalidate()
+        looper?.disableLooping()
         player.pause()
-        player.replaceCurrentItem(with: nil)
+        player.removeAllItems()
     }
 
     /// Wide videos keep their aspect ratio (FIT); tall ones fill (ZOOM).

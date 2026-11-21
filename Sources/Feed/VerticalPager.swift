@@ -249,6 +249,8 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let targetId = store.items[targetIndex].streamId
                 if store.activeStreamId != targetId {
                     store.activeStreamId = targetId
+                    let nextIndex = targetIndex + 1
+                    store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
                     preloadAhead(from: targetIndex)
                 }
             }
@@ -274,6 +276,8 @@ struct VerticalPager: UIViewControllerRepresentable {
                 if store.activeStreamId != targetId {
                     store.activeStreamId = targetId
                 }
+                let nextIndex = index + 1
+                store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
                 store.appendNextIfNeeded(near: index)
                 preloadAhead(from: index)
             }
