@@ -2,7 +2,6 @@ import SwiftUI
 
 #if canImport(UIKit)
 import UIKit
-import Darwin
 #endif
 
 /// Portrait, zero-UI vertical video feed. Port of the Android `FeedScreen`.
@@ -25,7 +24,6 @@ struct FeedScreen: View {
             if viewModel.videos.isEmpty && !viewModel.isLoading {
                 statusOverlay
             }
-            exitHotspot
         }
         .task(id: viewModel.videos.isEmpty) {
             if store == nil && !viewModel.videos.isEmpty {
@@ -77,20 +75,6 @@ struct FeedScreen: View {
                     .clipShape(RoundedRectangle(cornerRadius: 12))
             }
         }
-    }
-
-    /// Top-left 80pt hotspot: double-tap exits the app entirely, matching
-    /// the Android `finishAndRemoveTask` behaviour.
-    private var exitHotspot: some View {
-        Color.clear
-            .frame(width: 80, height: 80)
-            .contentShape(Rectangle())
-            .onTapGesture(count: 2) {
-                #if canImport(UIKit)
-                exit(0)
-                #endif
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -148,8 +132,6 @@ private struct FeedDebugHUD: View {
     private func copyId(_ id: String) {
         #if canImport(UIKit)
         UIPasteboard.general.string = id
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
         #endif
         withAnimation(.easeInOut(duration: 0.15)) {
             copied = true
