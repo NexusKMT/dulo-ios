@@ -111,7 +111,11 @@ struct PlayerLayerView: UIViewRepresentable {
         }
 
         private func setupLayer() {
-            backgroundColor = .clear
+            backgroundColor = .black
+            isOpaque = true
+            layer.isOpaque = true
+            layer.backgroundColor = UIColor.black.cgColor
+            layer.masksToBounds = false
             // Strip out implicit CALayer animations to prevent 250ms stretch or morph bugs
             playerLayer.actions = [
                 "contents": NSNull(),

@@ -83,14 +83,11 @@ struct FeedVideoPage: View {
                     isHidden: !isFirstFrameRendered,
                     onReadyForDisplay: {
                         AVTelemetryTracker.shared.recordReadyForDisplay(for: video.id)
-                        withAnimation(.linear(duration: 0.12)) {
-                            isFirstFrameRendered = true
-                        }
+                        isFirstFrameRendered = true
                     }
                 )
             }
         }
-        .clipped()
         .task(id: video.id) { await resolveOnce() }
         .task(id: prepareToken) { await prepareOnce() }
         .onChange(of: shouldPlay) { play in
@@ -217,6 +214,17 @@ struct FeedVideoPage: View {
         } else {
             playbackFailed = true
         }
+    }
+}
+
+extension FeedVideoPage: Equatable {
+    static func == (lhs: FeedVideoPage, rhs: FeedVideoPage) -> Bool {
+        lhs.streamId == rhs.streamId &&
+        lhs.video == rhs.video &&
+        lhs.store.activeStreamId == rhs.store.activeStreamId &&
+        lhs.store.visibleStreamIds == rhs.store.visibleStreamIds &&
+        lhs.store.prewarmStreamId == rhs.store.prewarmStreamId &&
+        lhs.store.sceneActive == rhs.store.sceneActive
     }
 }
 
@@ -437,7 +445,6 @@ private struct BulletproofRemoteImage: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
         .task(id: url) {
             if image == nil || image != ImagePipeline.shared.cachedImage(for: url) {
                 if let loaded = await ImagePipeline.shared.loadImage(for: url) {
