@@ -46,14 +46,14 @@ final class FeedViewModel: ObservableObject {
                 let loaded = try await client.listVideos(baseUrl: AppSettings.serverBaseUrl)
                 videos = loaded
                 if videos.isEmpty {
-                    error = "服务器目录中无可用视频"
+                    self.error = "服务器目录中无可用视频"
                 }
             } catch let mediaError as MediaException {
                 videos = []
                 self.error = mediaError.message
             } catch {
                 videos = []
-                error = "读取视频列表失败"
+                self.error = "读取视频列表失败"
             }
         }
     }

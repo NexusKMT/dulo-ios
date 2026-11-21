@@ -68,7 +68,7 @@ struct FeedVideoPage: View {
             guard isImagePost,
                   let item = note.object as? AVPlayerItem,
                   item === playerState.player.currentItem else { return }
-            playerState.player.seek(to: .zero)
+            playerState.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             playerState.player.play()
         }
         .task(id: video.id) { await resolveOnce() }
@@ -166,7 +166,7 @@ struct FeedVideoPage: View {
             let resumeAt = (preparedUrl == nil) ? CMTime.zero : playerState.player.currentTime()
             playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL))
             preparedUrl = playUrl
-            if resumeAt.seconds > 0 { playerState.player.seek(to: resumeAt) }
+            if resumeAt.seconds > 0 { await playerState.player.seek(to: resumeAt) }
         } else if isActive, playerState.player.currentItem?.error != nil {
             // Retry a failed prepare; deferred to activation for neighbours.
             playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL))
