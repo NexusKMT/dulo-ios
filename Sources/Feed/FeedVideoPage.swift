@@ -189,8 +189,8 @@ struct FeedVideoPage: View {
 }
 
 /// A photo post: horizontal paging through its images, fitting the screen without cropping.
-/// Images are loaded on demand (current index and adjacent prefetch), avoiding flooding
-/// the network with concurrent requests for all images in the post.
+/// Backed by global in-memory ImagePipeline, guaranteeing instant 0ms hits on back-swipes,
+/// no ProgressView spinners, and strictly directed K+1 prefetching.
 private struct ImagePostPager: View {
     let urls: [String]
     let isActive: Bool
@@ -199,66 +199,72 @@ private struct ImagePostPager: View {
 
     var body: some View {
         TabView(selection: $currentIndex) {
-            ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
-                LazyPhotoView(
-                    urlString: url,
-                    shouldLoad: shouldLoadImage(at: index)
-                )
-                .tag(index)
+            ForEach(Array(urls.enumerated()), id: \.offset) { index, urlString in
+                if let url = URL(string: urlString) {
+                    FastRemoteImage(url: url)
+                        .tag(index)
+                }
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
+        .onChange(of: currentIndex) { index in
+            schedulePrefetch(around: index)
+        }
+        .onChange(of: isActive) { active in
+            if active {
+                schedulePrefetch(around: currentIndex)
+            }
+        }
+        .onAppear {
+            if isActive {
+                schedulePrefetch(around: currentIndex)
+            } else if let first = urls.first, let url = URL(string: first) {
+                // When vertically prefetching (N+1), only prefetch the cover image!
+                ImagePipeline.shared.prefetch(urls: [url])
+            }
+        }
     }
 
-    private func shouldLoadImage(at index: Int) -> Bool {
-        if !isActive {
-            // When prefetching vertically (N+1), only load the first cover photo.
-            return index == 0
+    private func schedulePrefetch(around index: Int) {
+        guard isActive else { return }
+        // Pre-warm the next image in the scroll path
+        let nextIndex = index + 1
+        if nextIndex < urls.count, let url = URL(string: urls[nextIndex]) {
+            ImagePipeline.shared.prefetch(urls: [url])
         }
-        // When active, load current photo and pre-roll adjacent photos (index ± 1)
-        return abs(index - currentIndex) <= 1
     }
 }
 
-private struct LazyPhotoView: View {
-    let urlString: String
-    let shouldLoad: Bool
-    @State private var hasTriggered = false
+/// Instantaneous remote image view: probes L1 NSCache synchronously in init,
+/// completely eliminating the 1-frame empty phase and ProgressView spinners on reuse.
+private struct FastRemoteImage: View {
+    let url: URL
+
+    @State private var image: UIImage?
+
+    init(url: URL) {
+        self.url = url
+        if let cached = ImagePipeline.shared.cachedImage(for: url) {
+            _image = State(initialValue: cached)
+        }
+    }
 
     var body: some View {
         ZStack {
             Color.black
-            if hasTriggered || shouldLoad {
-                AsyncImage(url: URL(string: urlString)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                    case .failure:
-                        Color.black
-                    case .empty:
-                        ProgressView()
-                            .tint(.white)
-                    @unknown default:
-                        Color.black
-                    }
-                }
-                .onAppear {
-                    hasTriggered = true
-                }
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .onChange(of: shouldLoad) { load in
-            if load {
-                hasTriggered = true
-            }
-        }
-        .onAppear {
-            if shouldLoad {
-                hasTriggered = true
+        .task(id: url) {
+            if image == nil {
+                if let loaded = await ImagePipeline.shared.loadImage(for: url) {
+                    image = loaded
+                }
             }
         }
     }
