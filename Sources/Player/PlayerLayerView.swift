@@ -8,12 +8,18 @@ import UIKit
 /// the container's own layout, so the SwiftUI resize mode maps 1:1 onto it.
 struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer
-    var videoGravity: AVLayerVideoGravity = .resizeAspectFill
+    var videoGravity: AVLayerVideoGravity = .resizeAspect
     var isHidden: Bool = false
 
     func makeUIView(context: Context) -> PlayerLayerContainer {
         let view = PlayerLayerContainer()
         view.backgroundColor = .black
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.playerLayer.player = player
+        view.playerLayer.videoGravity = videoGravity
+        view.isHidden = isHidden
+        CATransaction.commit()
         return view
     }
 
@@ -22,10 +28,16 @@ struct PlayerLayerView: UIViewRepresentable {
             view.playerLayer.player = player
         }
         if view.playerLayer.videoGravity != videoGravity {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             view.playerLayer.videoGravity = videoGravity
+            CATransaction.commit()
         }
         if view.isHidden != isHidden {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             view.isHidden = isHidden
+            CATransaction.commit()
         }
     }
 

@@ -67,7 +67,9 @@ final class PlayerState: ObservableObject {
     }
 
     /// Wide videos keep their aspect ratio (FIT); tall ones fill (ZOOM).
+    /// If size is unknown (zero), default to FIT (.resizeAspect) to avoid initial zoom-in pop.
     var usesFitGravity: Bool {
-        presentationSize.width > presentationSize.height
+        if presentationSize == .zero { return true }
+        return presentationSize.width > presentationSize.height
     }
 }
