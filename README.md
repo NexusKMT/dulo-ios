@@ -37,5 +37,4 @@ swift build --target DuloCore   # 无 Xcode：CLT 只做核心模块编译检查
 
 ## 与 Android 版的差异
 
-- 视频字节走系统网络（AVFoundation 遵循系统代理设置），Android 客户端内嵌的 7890 代理由系统 Wi-Fi 代理等价覆盖。
 - 首次联网会弹 iOS 本地网络权限框，允许即可。
