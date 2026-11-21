@@ -26,21 +26,20 @@ final class FeedStreamStore: ObservableObject {
         seed()
     }
 
-    /// First page plus one prepared neighbour, mirroring the Android seed.
+    /// First page plus prepared neighbours for N+2 preloading.
     private func seed() {
-        items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
-        nextStreamId += 1
-        if queue.itemsCount > 1 {
+        while items.count < 3 && items.count < queue.itemsCount {
             items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
             nextStreamId += 1
         }
-        activeStreamId = items[0].streamId
+        if let first = items.first {
+            activeStreamId = first.streamId
+        }
     }
 
-    /// Extends the stream when the user nears its end; existing pages keep
-    /// their order for back-swipes.
+    /// Extends the stream when the user nears its end, maintaining an N+2 queue horizon.
     func appendNextIfNeeded(near index: Int) {
-        guard index >= items.count - 2 else { return }
+        guard index >= items.count - 3 else { return }
         items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
         nextStreamId += 1
     }

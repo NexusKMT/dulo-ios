@@ -89,6 +89,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             if lastReportedCount == 0 {
                 lastReportedCount = itemCount
                 collectionView.reloadData()
+                coordinator?.preloadAhead(from: 0)
             } else if itemCount > lastReportedCount {
                 let start = lastReportedCount
                 lastReportedCount = itemCount
@@ -226,6 +227,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let targetId = store.items[targetIndex].streamId
                 if store.activeStreamId != targetId {
                     store.activeStreamId = targetId
+                    preloadAhead(from: targetIndex)
                 }
             }
 
@@ -251,6 +253,18 @@ struct VerticalPager: UIViewControllerRepresentable {
                     store.activeStreamId = targetId
                 }
                 store.appendNextIfNeeded(near: index)
+                preloadAhead(from: index)
+            }
+        }
+
+        /// Pre-resolves media lease for N+2 so by the time user scrolls to N+1,
+        /// N+2 is already warm in LeaseLruCache.
+        func preloadAhead(from index: Int) {
+            let target = index + 2
+            guard target < store.items.count else { return }
+            let videoId = store.items[target].video.id
+            Task { [weak viewModel] in
+                await viewModel?.resolveMedia(id: videoId, force: false)
             }
         }
     }

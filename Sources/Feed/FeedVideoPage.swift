@@ -51,7 +51,7 @@ struct FeedVideoPage: View {
         ZStack {
             Color.black
             if case .images(let urls, _)? = media {
-                ImagePostPager(urls: urls)
+                ImagePostPager(urls: urls, isActive: isActive)
             } else {
                 PlayerLayerView(
                     player: playerState.player,
@@ -189,34 +189,77 @@ struct FeedVideoPage: View {
 }
 
 /// A photo post: horizontal paging through its images, fitting the screen without cropping.
+/// Images are loaded on demand (current index and adjacent prefetch), avoiding flooding
+/// the network with concurrent requests for all images in the post.
 private struct ImagePostPager: View {
     let urls: [String]
+    let isActive: Bool
+
+    @State private var currentIndex: Int = 0
 
     var body: some View {
-        TabView {
-            ForEach(Array(urls.enumerated()), id: \.offset) { _, url in
-                ZStack {
-                    Color.black
-                    AsyncImage(url: URL(string: url)) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFit()
-                        case .failure:
-                            Color.black
-                        case .empty:
-                            ProgressView()
-                                .tint(.white)
-                        @unknown default:
-                            Color.black
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipped()
+        TabView(selection: $currentIndex) {
+            ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                LazyPhotoView(
+                    urlString: url,
+                    shouldLoad: shouldLoadImage(at: index)
+                )
+                .tag(index)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
+    }
+
+    private func shouldLoadImage(at index: Int) -> Bool {
+        if !isActive {
+            // When prefetching vertically (N+1), only load the first cover photo.
+            return index == 0
+        }
+        // When active, load current photo and pre-roll adjacent photos (index ± 1)
+        return abs(index - currentIndex) <= 1
+    }
+}
+
+private struct LazyPhotoView: View {
+    let urlString: String
+    let shouldLoad: Bool
+    @State private var hasTriggered = false
+
+    var body: some View {
+        ZStack {
+            Color.black
+            if hasTriggered || shouldLoad {
+                AsyncImage(url: URL(string: urlString)) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                    case .failure:
+                        Color.black
+                    case .empty:
+                        ProgressView()
+                            .tint(.white)
+                    @unknown default:
+                        Color.black
+                    }
+                }
+                .onAppear {
+                    hasTriggered = true
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .onChange(of: shouldLoad) { load in
+            if load {
+                hasTriggered = true
+            }
+        }
+        .onAppear {
+            if shouldLoad {
+                hasTriggered = true
+            }
+        }
     }
 }
