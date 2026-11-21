@@ -20,4 +20,13 @@ public enum ResolvedMedia: Equatable {
 
     /// `music` is the post's background track; it loops while the images/slides show.
     case images(urls: [String], music: String?, slides: [GallerySlide] = [])
+
+    public var coverImageUrl: String? {
+        switch self {
+        case .video(_, let cover, _, _):
+            return cover
+        case .images(let urls, _, let slides):
+            return slides.first?.imageUrl ?? urls.first
+        }
+    }
 }
