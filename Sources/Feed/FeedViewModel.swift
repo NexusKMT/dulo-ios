@@ -15,8 +15,16 @@ final class FeedViewModel: ObservableObject {
     /// Main-actor access-order cache; it does not participate in SwiftUI state.
     private let resolvedMediaCache = LeaseLruCache<ResolvedMedia>()
 
-    /// One in-flight resolve per id; a force refresh replaces a pending request.
-    private var inFlight: [String: Task<MediaResolution, Never>] = [:]
+    /// One in-flight resolve per id; a force refresh replaces a pending
+    /// request. Identity is tracked by request id because Swift's `Task` is a
+    /// value type with no equality.
+    private struct InFlight {
+        let requestId: Int
+        let task: Task<MediaResolution, Never>
+    }
+
+    private var inFlight: [String: InFlight] = [:]
+    private var nextRequestId = 0
 
     init() {
         loadFeed()
@@ -40,9 +48,9 @@ final class FeedViewModel: ObservableObject {
                 if videos.isEmpty {
                     error = "服务器目录中无可用视频"
                 }
-            } catch let error as MediaException {
+            } catch let mediaError as MediaException {
                 videos = []
-                self.error = error.message
+                self.error = mediaError.message
             } catch {
                 videos = []
                 error = "读取视频列表失败"
@@ -61,16 +69,18 @@ final class FeedViewModel: ObservableObject {
             return
         }
         if let pending = inFlight[id], !force {
-            Task { onResult?(await pending.value) }
+            Task { onResult?(await pending.task.value) }
             return
         }
+        let requestId = nextRequestId
+        nextRequestId += 1
         let task = Task { [client] in
             await client.resolveMedia(baseUrl: AppSettings.serverBaseUrl, id: id, force: force)
         }
-        inFlight[id] = task
+        inFlight[id] = InFlight(requestId: requestId, task: task)
         Task {
             let result = await task.value
-            if inFlight[id] === task {
+            if inFlight[id]?.requestId == requestId {
                 inFlight.removeValue(forKey: id)
                 if case .ready(let lease) = result {
                     resolvedMediaCache.put(key: id, lease: lease, nowElapsedMs: monotonicNowMs())

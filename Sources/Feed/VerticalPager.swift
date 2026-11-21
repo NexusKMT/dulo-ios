@@ -7,6 +7,7 @@ import UIKit
 /// scroll mode: full-size pages, midpoint activation on drag, one prepared
 /// neighbour. SwiftUI has no vertical paging below iOS 17, and the scroll
 /// snap behaviour is exactly what UIPageViewController provides.
+@MainActor
 struct VerticalPager: UIViewControllerRepresentable {
     @ObservedObject var store: FeedStreamStore
     @ObservedObject var viewModel: FeedViewModel

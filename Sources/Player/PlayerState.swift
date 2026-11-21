@@ -34,20 +34,20 @@ final class PlayerState: ObservableObject {
         itemObservation = player.observe(\.currentItem, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
                 guard let self else { return }
-                statusObservation?.invalidate()
-                sizeObservation?.invalidate()
+                self.statusObservation?.invalidate()
+                self.sizeObservation?.invalidate()
                 guard let item = player.currentItem else {
-                    presentationSize = .zero
+                    self.presentationSize = .zero
                     return
                 }
-                statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                self.statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
                     if item.status == .failed {
                         Task { @MainActor in
                             self?.onPlaybackError?(item.error)
                         }
                     }
                 }
-                sizeObservation = item.observe(\.presentationSize, options: [.initial, .new]) { [weak self] item, _ in
+                self.sizeObservation = item.observe(\.presentationSize, options: [.initial, .new]) { [weak self] item, _ in
                     Task { @MainActor in
                         self?.presentationSize = item.presentationSize
                     }

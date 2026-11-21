@@ -3,6 +3,7 @@ import SwiftUI
 
 /// One feed page: owns its AVPlayer, resolves its lease, and drives
 /// play/pause from the pager. Port of the Android `FeedVideoPage`.
+@MainActor
 struct FeedVideoPage: View {
     let streamId: Int64
     let video: VideoItem
@@ -78,7 +79,7 @@ struct FeedVideoPage: View {
         .onChange(of: isImagePost && isActive) { awake in
             store.setKeepAwake(awake, for: streamId)
         }
-        .onChange(of: skipToken) {
+        .onChange(of: skipToken) { _ in
             if isActive && (resolutionFailed || playbackFailed) { onNextVideo() }
         }
         .onDisappear {

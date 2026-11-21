@@ -6,6 +6,7 @@ import Darwin
 #endif
 
 /// Portrait, zero-UI vertical video feed. Port of the Android `FeedScreen`.
+@MainActor
 struct FeedScreen: View {
     @ObservedObject var viewModel: FeedViewModel
     @Environment(\.scenePhase) private var scenePhase

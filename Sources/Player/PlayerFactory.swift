@@ -19,7 +19,7 @@ enum PlayerFactory {
     static func makeItem(url: URL) -> AVPlayerItem {
         let asset = AVURLAsset(
             url: url,
-            options: [AVURLAssetHTTPHeaderFieldsKey: httpHeaders]
+            options: ["AVURLAssetHTTPHeaderFieldsKey": httpHeaders]
         )
         return AVPlayerItem(asset: asset)
     }
