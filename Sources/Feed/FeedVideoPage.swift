@@ -190,7 +190,7 @@ struct FeedVideoPage: View {
 
 /// A photo post: horizontal paging through its images, fitting the screen without cropping.
 /// Backed by global in-memory ImagePipeline, guaranteeing instant 0ms hits on back-swipes,
-/// no ProgressView spinners, and strictly directed K+1 prefetching.
+/// no ProgressView spinners, and strictly windowed sliding-cache prefetching.
 private struct ImagePostPager: View {
     let urls: [String]
     let isActive: Bool
@@ -201,8 +201,11 @@ private struct ImagePostPager: View {
         TabView(selection: $currentIndex) {
             ForEach(Array(urls.enumerated()), id: \.offset) { index, urlString in
                 if let url = URL(string: urlString) {
-                    FastRemoteImage(url: url)
-                        .tag(index)
+                    FastRemoteImage(
+                        url: url,
+                        shouldLoad: shouldLoad(at: index)
+                    )
+                    .tag(index)
                 }
             }
         }
@@ -225,6 +228,15 @@ private struct ImagePostPager: View {
         }
     }
 
+    private func shouldLoad(at index: Int) -> Bool {
+        guard isActive else {
+            // When prefetching vertically (N+1 / N+2), only load the cover photo (index 0)
+            return index == 0
+        }
+        // Enforce sliding window: active image and immediate neighbours (index ± 1)
+        return abs(index - currentIndex) <= 1
+    }
+
     private func schedulePrefetch(around index: Int) {
         guard isActive else { return }
         // Pre-warm the next image in the scroll path
@@ -237,14 +249,17 @@ private struct ImagePostPager: View {
 
 /// Instantaneous remote image view: probes L1 NSCache synchronously in init,
 /// completely eliminating the 1-frame empty phase and ProgressView spinners on reuse.
+/// Releases decoded bitmaps outside the sliding window to protect against Jetsam OOM.
 private struct FastRemoteImage: View {
     let url: URL
+    let shouldLoad: Bool
 
     @State private var image: UIImage?
 
-    init(url: URL) {
+    init(url: URL, shouldLoad: Bool) {
         self.url = url
-        if let cached = ImagePipeline.shared.cachedImage(for: url) {
+        self.shouldLoad = shouldLoad
+        if shouldLoad, let cached = ImagePipeline.shared.cachedImage(for: url) {
             _image = State(initialValue: cached)
         }
     }
@@ -260,11 +275,19 @@ private struct FastRemoteImage: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .task(id: url) {
-            if image == nil {
-                if let loaded = await ImagePipeline.shared.loadImage(for: url) {
-                    image = loaded
+        .task(id: shouldLoad) {
+            if shouldLoad {
+                if image == nil {
+                    if let cached = ImagePipeline.shared.cachedImage(for: url) {
+                        image = cached
+                        return
+                    }
+                    if let loaded = await ImagePipeline.shared.loadImage(for: url) {
+                        image = loaded
+                    }
                 }
+            } else {
+                image = nil
             }
         }
     }

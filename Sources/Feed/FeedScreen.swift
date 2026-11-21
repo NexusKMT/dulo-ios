@@ -174,9 +174,8 @@ private struct FeedDebugHUD: View {
             dislikedIds.insert(id)
         }
         guard let url = URL(string: "\(AppSettings.serverBaseUrl)/dislike/\(id)") else { return }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 10)
         request.httpMethod = "POST"
-        request.timeoutInterval = 10
         Task.detached {
             _ = try? await URLSession.shared.data(for: request)
         }

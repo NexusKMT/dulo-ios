@@ -43,12 +43,11 @@ enum PlayerFactory {
     /// errors, so the renewal path keys off this instead of error parsing.
     static func preflightStatus(url: String) async -> Int? {
         guard let url = URL(string: url) else { return nil }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 10)
         for (key, value) in httpHeaders {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
-        request.timeoutInterval = 10
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
             return (response as? HTTPURLResponse)?.statusCode

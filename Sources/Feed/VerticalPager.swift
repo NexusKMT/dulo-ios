@@ -134,6 +134,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             viewModel = nil
         }
 
+        func didEndDisplaying() {
+            cleanupHosting()
+        }
+
         func configure(
             item: FeedStreamItem,
             store: FeedStreamStore,
@@ -205,6 +209,13 @@ struct VerticalPager: UIViewControllerRepresentable {
                 parent: controller
             )
             return cell
+        }
+
+        func collectionView(_ collectionView: UICollectionView,
+                            didEndDisplaying cell: UICollectionViewCell,
+                            forItemAt indexPath: IndexPath) {
+            guard let videoCell = cell as? FeedVideoCell else { return }
+            videoCell.didEndDisplaying()
         }
 
         func collectionView(_ collectionView: UICollectionView,
