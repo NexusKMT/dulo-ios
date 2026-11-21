@@ -2,7 +2,7 @@ name: Dulo
 options:
   bundleIdPrefix: dev.dulo
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "15.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -19,6 +19,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.dulo.player
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_BITCODE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # TrollStore fakesigns ad-hoc IPAs on install; no certificate needed.
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: "NO"

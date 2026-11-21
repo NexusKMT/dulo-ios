@@ -6,7 +6,7 @@ struct SettingsView: View {
     @State private var baseUrl = AppSettings.serverBaseUrl
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section("媒体服务器") {
                     TextField("http://192.168.2.3:8080", text: $baseUrl)
