@@ -12,12 +12,22 @@ struct VerticalPager: UIViewControllerRepresentable {
     @ObservedObject var store: FeedStreamStore
     @ObservedObject var viewModel: FeedViewModel
 
+    final class LockedPageViewController: UIPageViewController {
+        override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+        override var shouldAutorotate: Bool { false }
+    }
+
+    final class LockedHostingController<Content: View>: UIHostingController<Content> {
+        override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+        override var shouldAutorotate: Bool { false }
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(store: store, viewModel: viewModel)
     }
 
     func makeUIViewController(context: Context) -> UIPageViewController {
-        let pager = UIPageViewController(
+        let pager = LockedPageViewController(
             transitionStyle: .scroll,
             navigationOrientation: .vertical,
             options: [.interPageSpacing: 0]
@@ -44,7 +54,7 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         /// Strong refs to page hosts; evicted beyond a window of 3 so the
         /// infinite feed does not accumulate players.
-        private var controllers: [Int64: UIHostingController<FeedVideoPage>] = [:]
+        private var controllers: [Int64: UIViewController] = [:]
 
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
@@ -54,7 +64,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         func pageController(at index: Int) -> UIViewController {
             let item = store.items[index]
             if let existing = controllers[item.streamId] { return existing }
-            let host = UIHostingController(rootView: FeedVideoPage(
+            let host = LockedHostingController(rootView: FeedVideoPage(
                 streamId: item.streamId,
                 video: item.video,
                 store: store,
@@ -69,7 +79,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         private func index(of vc: UIViewController) -> Int? {
-            guard let host = vc as? UIHostingController<FeedVideoPage> else { return nil }
+            guard let host = vc as? LockedHostingController<FeedVideoPage> else { return nil }
             let streamId = host.rootView.streamId
             return store.items.firstIndex { $0.streamId == streamId }
         }

@@ -34,7 +34,9 @@ targets:
         UIUserInterfaceStyle: Dark
         UIStatusBarHidden: true
         UIViewControllerBasedStatusBarAppearance: false
+        UIRequiresFullScreen: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        "UISupportedInterfaceOrientations~ipad": [UIInterfaceOrientationPortrait]
         NSLocalNetworkUsageDescription: Dulo 需要访问局域网内的媒体服务器以加载视频。
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
