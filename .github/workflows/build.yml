@@ -21,12 +21,12 @@ jobs:
             -destination 'platform=iOS Simulator,name=iPhone 16' \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Archive (ad-hoc)
+      - name: Archive (unsigned; TrollStore signs on install)
         run: |
           xcodebuild archive -project Dulo.xcodeproj -scheme Dulo \
             -destination 'generic/platform=iOS' \
             -archivePath build/Dulo.xcarchive \
-            CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
       - name: Package IPA
         run: |
