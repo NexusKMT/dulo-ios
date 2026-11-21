@@ -14,7 +14,7 @@ final class LeaseLruCache<T> {
         }
     }
 
-    static var defaultMaxSize: Int { 128 }
+    static var defaultMaxSize: Int { 1024 }
 
     private let maxSize: Int
     private var map: [String: Node] = [:]
