@@ -3,148 +3,237 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 
-/// Vertical full-page pager (TikTok-style) backed by UIPageViewController in
-/// scroll mode: full-size pages, midpoint activation on drag, one prepared
-/// neighbour. SwiftUI has no vertical paging below iOS 17, and the scroll
-/// snap behaviour is exactly what UIPageViewController provides.
+/// Vertical full-page pager (TikTok-style) backed by UICollectionView with paging.
+/// Delivers continuous playback while dragging (play while dragging): the active video
+/// continues playing smoothly during the drag gesture until crossing the scroll threshold,
+/// matching Android Compose VerticalPager and official TikTok/Shorts architecture.
 @MainActor
 struct VerticalPager: UIViewControllerRepresentable {
     @ObservedObject var store: FeedStreamStore
     @ObservedObject var viewModel: FeedViewModel
 
-    final class LockedPageViewController: UIPageViewController {
-        override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
-        override var shouldAutorotate: Bool { false }
-    }
-
-    final class LockedHostingController<Content: View>: UIHostingController<Content> {
-        override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
-        override var shouldAutorotate: Bool { false }
-    }
-
     func makeCoordinator() -> Coordinator {
         Coordinator(store: store, viewModel: viewModel)
     }
 
-    func makeUIViewController(context: Context) -> UIPageViewController {
-        let pager = LockedPageViewController(
-            transitionStyle: .scroll,
-            navigationOrientation: .vertical,
-            options: [.interPageSpacing: 0]
-        )
-        pager.dataSource = context.coordinator
-        pager.delegate = context.coordinator
-        pager.view.backgroundColor = .black
-        pager.setViewControllers(
-            [context.coordinator.pageController(at: 0)],
-            direction: .forward, animated: false
-        )
-        return pager
+    func makeUIViewController(context: Context) -> FeedCollectionViewController {
+        let layout = UICollectionViewFlowLayout()
+        layout.scrollDirection = .vertical
+        layout.minimumLineSpacing = 0
+        layout.minimumInteritemSpacing = 0
+
+        let controller = FeedCollectionViewController(layout: layout, coordinator: context.coordinator)
+        context.coordinator.controller = controller
+        return controller
     }
 
-    func updateUIViewController(_ pager: UIPageViewController, context: Context) {
-        context.coordinator.pager = pager
+    func updateUIViewController(_ controller: FeedCollectionViewController, context: Context) {
+        context.coordinator.store = store
+        context.coordinator.viewModel = viewModel
+        controller.update(itemCount: store.items.count)
     }
+
+    // MARK: - Controller
+
+    final class FeedCollectionViewController: UIViewController {
+        override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+        override var shouldAutorotate: Bool { false }
+
+        let layout: UICollectionViewFlowLayout
+        weak var coordinator: Coordinator?
+        var collectionView: UICollectionView!
+        private var lastReportedCount = 0
+
+        init(layout: UICollectionViewFlowLayout, coordinator: Coordinator) {
+            self.layout = layout
+            self.coordinator = coordinator
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .black
+
+            collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
+            collectionView.backgroundColor = .black
+            collectionView.isPagingEnabled = true
+            collectionView.showsVerticalScrollIndicator = false
+            collectionView.contentInsetAdjustmentBehavior = .never
+            collectionView.bounces = true
+            collectionView.dataSource = coordinator
+            collectionView.delegate = coordinator
+            collectionView.register(FeedVideoCell.self, forCellWithReuseIdentifier: FeedVideoCell.reuseId)
+            collectionView.translatesAutoresizingMaskIntoConstraints = false
+
+            view.addSubview(collectionView)
+            NSLayoutConstraint.activate([
+                collectionView.topAnchor.constraint(equalTo: view.topAnchor),
+                collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            ])
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            if layout.itemSize != view.bounds.size {
+                layout.itemSize = view.bounds.size
+                layout.invalidateLayout()
+            }
+        }
+
+        func update(itemCount: Int) {
+            if itemCount != lastReportedCount {
+                lastReportedCount = itemCount
+                collectionView?.reloadData()
+            }
+        }
+
+        func scrollTo(index: Int, animated: Bool) {
+            guard index >= 0, index < (coordinator?.store.items.count ?? 0) else { return }
+            let indexPath = IndexPath(item: index, section: 0)
+            collectionView?.scrollToItem(at: indexPath, at: .top, animated: animated)
+        }
+    }
+
+    // MARK: - Cell
+
+    final class FeedVideoCell: UICollectionViewCell {
+        static let reuseId = "FeedVideoCell"
+        private var hostingController: UIHostingController<AnyView>?
+
+        func configure(
+            item: FeedStreamItem,
+            store: FeedStreamStore,
+            viewModel: FeedViewModel,
+            parent: UIViewController,
+            onNextVideo: @escaping () -> Void
+        ) {
+            let page = FeedVideoPage(
+                streamId: item.streamId,
+                video: item.video,
+                store: store,
+                viewModel: viewModel,
+                onNextVideo: onNextVideo
+            ).id(item.streamId)
+
+            let erased = AnyView(page)
+
+            if let host = hostingController {
+                host.rootView = erased
+            } else {
+                let host = UIHostingController(rootView: erased)
+                host.view.backgroundColor = .black
+                host.view.translatesAutoresizingMaskIntoConstraints = false
+                contentView.addSubview(host.view)
+                NSLayoutConstraint.activate([
+                    host.view.topAnchor.constraint(equalTo: contentView.topAnchor),
+                    host.view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+                    host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                    host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+                ])
+                parent.addChild(host)
+                host.didMove(toParent: parent)
+                self.hostingController = host
+            }
+        }
+    }
+
+    // MARK: - Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
-        let store: FeedStreamStore
-        let viewModel: FeedViewModel
-        weak var pager: UIPageViewController?
-
-        /// Strong refs to page hosts; evicted beyond a window of 3 so the
-        /// infinite feed does not accumulate players.
-        private var controllers: [Int64: UIViewController] = [:]
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+        var store: FeedStreamStore
+        var viewModel: FeedViewModel
+        weak var controller: FeedCollectionViewController?
 
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
             self.viewModel = viewModel
         }
 
-        func pageController(at index: Int) -> UIViewController {
-            let item = store.items[index]
-            if let existing = controllers[item.streamId] { return existing }
-            let host = LockedHostingController(rootView: FeedVideoPage(
-                streamId: item.streamId,
-                video: item.video,
+        func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+            store.items.count
+        }
+
+        func collectionView(_ collectionView: UICollectionView,
+                            cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+            let cell = collectionView.dequeueReusableCell(
+                withReuseIdentifier: FeedVideoCell.reuseId,
+                for: indexPath
+            ) as! FeedVideoCell
+
+            guard let controller else { return cell }
+            let item = store.items[indexPath.item]
+
+            cell.configure(
+                item: item,
                 store: store,
                 viewModel: viewModel,
+                parent: controller,
                 onNextVideo: { [weak self] in
                     self?.skipForward(from: item.streamId)
                 }
-            ))
-            host.view.backgroundColor = .black
-            controllers[item.streamId] = host
-            return host
+            )
+            return cell
         }
 
-        private func index(of vc: UIViewController) -> Int? {
-            guard let host = vc as? LockedHostingController<FeedVideoPage> else { return nil }
-            let streamId = host.rootView.streamId
-            return store.items.firstIndex { $0.streamId == streamId }
+        func collectionView(_ collectionView: UICollectionView,
+                            layout collectionViewLayout: UICollectionViewLayout,
+                            sizeForItemAt indexPath: IndexPath) -> CGSize {
+            collectionView.bounds.size
         }
 
-        // MARK: UIPageViewControllerDataSource
+        // MARK: - Scroll & Midpoint Activation (Play While Dragging)
 
-        func pageViewController(_ pageViewController: UIPageViewController,
-                                viewControllerBefore viewController: UIViewController) -> UIViewController? {
-            guard let i = index(of: viewController), i > 0 else { return nil }
-            return pageController(at: i - 1)
-        }
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            let pageHeight = scrollView.bounds.height
+            guard pageHeight > 0 else { return }
+            let offsetY = scrollView.contentOffset.y
 
-        func pageViewController(_ pageViewController: UIPageViewController,
-                                viewControllerAfter viewController: UIViewController) -> UIViewController? {
-            guard let i = index(of: viewController) else { return nil }
-            store.appendNextIfNeeded(near: i)
-            guard i + 1 < store.items.count else { return nil }
-            return pageController(at: i + 1)
-        }
-
-        // MARK: UIPageViewControllerDelegate
-
-        /// Fires when the drag crosses the midpoint: the new page becomes
-        /// active while the old one keeps playing until then.
-        func pageViewController(_ pageViewController: UIPageViewController,
-                                willTransitionTo pendingViewControllers: [UIViewController]) {
-            guard let i = pendingViewControllers.first.flatMap(index(of:)) else { return }
-            store.activeStreamId = store.items[i].streamId
-        }
-
-        func pageViewController(_ pageViewController: UIPageViewController,
-                                didFinishAnimating finished: Bool,
-                                previousViewControllers: [UIViewController],
-                                transitionCompleted completed: Bool) {
-            guard let current = pageViewController.viewControllers?.first,
-                  let i = index(of: current) else { return }
-            store.activeStreamId = store.items[i].streamId
-            evictFarPages(keeping: i)
-        }
-
-        /// Pages beyond current ±1 hold players the feed will never reuse
-        /// soon; release them so memory stays bounded.
-        private func evictFarPages(keeping current: Int) {
-            let keep = controllers.keys.filter { id in
-                guard let i = store.items.firstIndex(where: { $0.streamId == id }) else { return false }
-                return abs(i - current) <= 1
+            // Smooth threshold handoff: video keeps playing during 0%~50% drag
+            // When passing 50% midpoint, activeStreamId transitions seamlessly
+            let targetIndex = Int((offsetY + pageHeight * 0.5) / pageHeight)
+            if targetIndex >= 0 && targetIndex < store.items.count {
+                let targetId = store.items[targetIndex].streamId
+                if store.activeStreamId != targetId {
+                    store.activeStreamId = targetId
+                }
             }
-            controllers = controllers.filter { keep.contains($0.key) }
+
+            let currentIndex = max(0, Int(offsetY / pageHeight))
+            store.appendNextIfNeeded(near: currentIndex)
         }
 
-        // MARK: Skip
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            confirmSettledPage(scrollView)
+        }
+
+        func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+            confirmSettledPage(scrollView)
+        }
+
+        private func confirmSettledPage(_ scrollView: UIScrollView) {
+            let pageHeight = scrollView.bounds.height
+            guard pageHeight > 0 else { return }
+            let index = Int(round(scrollView.contentOffset.y / pageHeight))
+            if index >= 0 && index < store.items.count {
+                let targetId = store.items[index].streamId
+                if store.activeStreamId != targetId {
+                    store.activeStreamId = targetId
+                }
+                store.appendNextIfNeeded(near: index)
+            }
+        }
 
         func skipForward(from streamId: Int64) {
             guard let i = store.items.firstIndex(where: { $0.streamId == streamId }) else { return }
             store.appendNextIfNeeded(near: i)
             guard i + 1 < store.items.count else { return }
-            let next = store.items[i + 1]
-            pager?.setViewControllers(
-                [pageController(at: i + 1)], direction: .forward, animated: true
-            ) { [weak self] completed in
-                if completed {
-                    self?.evictFarPages(keeping: i + 1)
-                }
-            }
-            store.activeStreamId = next.streamId
+            controller?.scrollTo(index: i + 1, animated: true)
+            store.activeStreamId = store.items[i + 1].streamId
         }
     }
 }
