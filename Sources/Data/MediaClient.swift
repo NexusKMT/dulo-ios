@@ -90,7 +90,7 @@ struct MediaClient {
         if !body.images.isEmpty {
             media = .images(urls: body.images, music: body.music)
         } else if let playUrl = body.url, !playUrl.isEmpty {
-            media = .video(url: playUrl)
+            media = .video(url: playUrl, cover: body.cover, width: body.width ?? 0, height: body.height ?? 0)
         } else {
             return .notFound
         }

@@ -30,6 +30,9 @@ struct ManifestItem: Decodable {
 /// `ttlSeconds`, matching the Android client's behaviour.
 struct ResolveResponse: Decodable {
     let url: String?
+    let cover: String?
+    let width: Int?
+    let height: Int?
     let images: [String]
     let music: String?
     let ttlSeconds: Int64?
@@ -37,6 +40,9 @@ struct ResolveResponse: Decodable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         url = try? c.decodeIfPresent(String.self, forKey: .url)
+        cover = try? c.decodeIfPresent(String.self, forKey: .cover)
+        width = try? c.decodeIfPresent(Int.self, forKey: .width)
+        height = try? c.decodeIfPresent(Int.self, forKey: .height)
         images = (try? c.decodeIfPresent([String].self, forKey: .images)) ?? []
         music = try? c.decodeIfPresent(String.self, forKey: .music)
         if let intVal = try? c.decodeIfPresent(Int64.self, forKey: .ttlSeconds) {
@@ -48,5 +54,7 @@ struct ResolveResponse: Decodable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case url, images, music, ttlSeconds }
+    private enum CodingKeys: String, CodingKey {
+        case url, cover, width, height, images, music, ttlSeconds
+    }
 }

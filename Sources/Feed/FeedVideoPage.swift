@@ -19,6 +19,7 @@ struct FeedVideoPage: View {
     @State private var retryCount = 0
     @State private var retryNonce = 0
     @State private var preparedUrl: String?
+    @State private var isFirstFrameRendered = false
 
     init(streamId: Int64, video: VideoItem, store: FeedStreamStore, viewModel: FeedViewModel) {
         self.streamId = streamId
@@ -38,10 +39,24 @@ struct FeedVideoPage: View {
         return false
     }
 
+    private var videoCoverUrl: String? {
+        if case .video(_, let cover, _, _) = media {
+            return cover
+        }
+        return nil
+    }
+
+    private var usesFitGravity: Bool {
+        if case .video(_, _, let w, let h) = media, w > 0 && h > 0 {
+            return w > h
+        }
+        return playerState.usesFitGravity
+    }
+
     /// Videos play their stream; image posts play their background track.
     private var playUrl: String? {
         switch media {
-        case .video(let url): return url
+        case .video(let url, _, _, _): return url
         case .images(_, let music): return music
         case nil: return nil
         }
@@ -55,9 +70,19 @@ struct FeedVideoPage: View {
             } else {
                 PlayerLayerView(
                     player: playerState.player,
-                    videoGravity: playerState.usesFitGravity ? .resizeAspect : .resizeAspectFill,
-                    isHidden: playerState.presentationSize == .zero
+                    videoGravity: usesFitGravity ? .resizeAspect : .resizeAspectFill,
+                    isHidden: false,
+                    onReadyForDisplay: {
+                        withAnimation(.linear(duration: 0.12)) {
+                            isFirstFrameRendered = true
+                        }
+                    }
                 )
+
+                if let coverUrl = videoCoverUrl, let url = URL(string: coverUrl), !isFirstFrameRendered {
+                    FastRemoteImage(url: url, shouldLoad: true)
+                        .transition(.opacity)
+                }
             }
         }
         .clipped()
