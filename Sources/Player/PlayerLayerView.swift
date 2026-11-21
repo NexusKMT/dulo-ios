@@ -23,6 +23,7 @@ struct PlayerLayerView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> PlayerLayerContainer {
+        AVTelemetryTracker.shared.registerActiveDecoder()
         let view = PlayerLayerContainer()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -85,6 +86,7 @@ struct PlayerLayerView: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ view: PlayerLayerContainer, coordinator: Coordinator) {
+        AVTelemetryTracker.shared.unregisterActiveDecoder()
         coordinator.observer?.invalidate()
         coordinator.observer = nil
         CATransaction.begin()

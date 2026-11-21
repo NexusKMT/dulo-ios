@@ -249,6 +249,13 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let targetId = store.items[targetIndex].streamId
                 if store.activeStreamId != targetId {
                     store.activeStreamId = targetId
+                    let videoId = store.items[targetIndex].video.id
+                    let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
+                    AVTelemetryTracker.shared.recordSwipeTrigger(
+                        for: videoId,
+                        cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
+                        isCacheHit: isCached
+                    )
                     let nextIndex = targetIndex + 1
                     store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
                     preloadAhead(from: targetIndex)

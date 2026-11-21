@@ -75,6 +75,7 @@ struct FeedVideoPage: View {
                     videoGravity: usesFitGravity ? .resizeAspect : .resizeAspectFill,
                     isHidden: false,
                     onReadyForDisplay: {
+                        AVTelemetryTracker.shared.recordReadyForDisplay(for: video.id)
                         withAnimation(.linear(duration: 0.12)) {
                             isFirstFrameRendered = true
                         }

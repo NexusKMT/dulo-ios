@@ -78,11 +78,15 @@ struct FeedScreen: View {
     }
 }
 
-/// Floating debug HUD displaying video identity (tap to copy), dislike feedback button, and title.
+/// Floating debug HUD displaying video identity, dislike button, and live performance telemetry.
 private struct FeedDebugHUD: View {
     @ObservedObject var store: FeedStreamStore
+    @ObservedObject private var perfMonitor = PerformanceMonitor.shared
+    @ObservedObject private var avTracker = AVTelemetryTracker.shared
+
     @State private var copied = false
     @State private var dislikedIds: Set<String> = []
+    @State private var showTelemetry = true
 
     var body: some View {
         if let video = store.items.first(where: { $0.streamId == store.activeStreamId })?.video {
@@ -103,6 +107,27 @@ private struct FeedDebugHUD: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
                         .background(copied ? Color.green.opacity(0.2) : Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    // Telemetry HUD Toggle Button
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showTelemetry.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "gauge.badge.plus")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(showTelemetry ? Color.green : Color.white.opacity(0.6))
+                            Text("遥测")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(showTelemetry ? Color.green : Color.white.opacity(0.85))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(showTelemetry ? Color.green.opacity(0.2) : Color.white.opacity(0.08))
                         .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                     }
                     .buttonStyle(.plain)
@@ -131,6 +156,37 @@ private struct FeedDebugHUD: View {
                     .disabled(isDisliked)
                 }
 
+                // Telemetry Stats Row: WWDC CoreAnimation Hitch Ratio + TTFF + Decoders + True RAM (phys_footprint)
+                if showTelemetry {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text(String(format: "%.1f FPS", perfMonitor.currentSnapshot.fps))
+                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.green)
+                            Text(String(format: "Hitch: %.1f ms/s", perfMonitor.currentSnapshot.hitchRatioMsPerSec))
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(perfMonitor.currentSnapshot.hitchRatioMsPerSec < 5 ? .green : (perfMonitor.currentSnapshot.hitchRatioMsPerSec < 10 ? .yellow : .red))
+                            if let av = avTracker.latestTelemetry, av.ttffMs > 0 {
+                                Text(String(format: "TTFF: %.0fms [%@]", av.ttffMs, av.cacheTier))
+                                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(av.ttffMs < 150 ? .cyan : .orange)
+                            }
+                        }
+                        HStack(spacing: 8) {
+                            Text("Decoders: \(avTracker.activeDecoderCount)/2")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(avTracker.activeDecoderCount <= 2 ? .green : .red)
+                            Text(String(format: "RAM: %.0f MB", perfMonitor.currentSnapshot.memoryFootprintMB))
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.8))
+                            Text(String(format: "CPU: %.0f%%", perfMonitor.currentSnapshot.cpuUsagePercent))
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+
                 // Title Row: clean display without blocking gestures
                 if !video.title.isEmpty {
                     Text(video.title)
@@ -142,8 +198,8 @@ private struct FeedDebugHUD: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .frame(maxWidth: 320, alignment: .leading)
-            .background(Color.black.opacity(0.55))
+            .frame(maxWidth: 340, alignment: .leading)
+            .background(Color.black.opacity(0.65))
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)

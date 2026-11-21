@@ -24,6 +24,7 @@ struct DuloApp: App {
     init() {
         PlayerFactory.configureAudioSession()
         LocalMediaProxyServer.shared.start()
+        PerformanceMonitor.shared.start()
     }
 
     var body: some Scene {
