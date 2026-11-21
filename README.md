@@ -14,10 +14,10 @@ SwiftUI 全量重写的 Dulo iOS 客户端（Android 版：`dev.dulo.player`）�
 无需本地 Xcode：push 到 `main` 即构建，产物在 Actions 的 **Dulo.ipa** artifact。
 
 ```
-push → macos-15 → xcodegen generate → 模拟器单测 → ad-hoc archive → zip IPA
+push → macos-15 → xcodegen generate → 模拟器单测 → 无签名 archive → zip IPA
 ```
 
-IPA 是 ad-hoc 签名，TrollStore 安装时自动 fakesign。
+IPA 不签名（TrollStore 安装时自动 fakesign）。
 
 ## 本地开发
 
