@@ -28,6 +28,7 @@ final class PlayerState: ObservableObject {
     init() {
         player = AVPlayer()
         player.automaticallyWaitsToMinimizeStalling = true
+        player.preventsDisplaySleepDuringVideoPlayback = true
 
         timeObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor in

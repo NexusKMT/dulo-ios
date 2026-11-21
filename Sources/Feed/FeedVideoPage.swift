@@ -72,17 +72,10 @@ struct FeedVideoPage: View {
         }
         .task(id: video.id) { await resolveOnce() }
         .task(id: prepareToken) { await prepareOnce() }
-        .onChange(of: playerState.isPlaying) { playing in
-            store.setKeepAwake(playing, for: streamId)
-        }
-        .onChange(of: isImagePost && isActive) { awake in
-            store.setKeepAwake(awake, for: streamId)
-        }
         .onChange(of: skipToken) { _ in
             if isActive && (resolutionFailed || playbackFailed) { onNextVideo() }
         }
         .onDisappear {
-            store.setKeepAwake(false, for: streamId)
             playerState.player.pause()
         }
         .onAppear {

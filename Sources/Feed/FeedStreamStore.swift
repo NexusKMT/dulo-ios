@@ -9,17 +9,13 @@ struct FeedStreamItem: Identifiable {
 }
 
 /// Mutable state shared between the vertical pager (UIKit) and the SwiftUI
-/// pages: the growing stream, which page is active, scene phase, and the
-/// keep-awake votes. Pages observe this store, so UIKit-driven changes
-/// re-render SwiftUI.
+/// pages: the growing stream, which page is active, and scene phase.
+/// Pages observe this store, so UIKit-driven changes re-render SwiftUI.
 @MainActor
 final class FeedStreamStore: ObservableObject {
     @Published private(set) var items: [FeedStreamItem] = []
     @Published var activeStreamId: Int64 = 0
     @Published var sceneActive = true
-
-    /// Stream ids of pages that currently demand the display stay awake.
-    @Published private(set) var keepAwakeVotes: Set<Int64> = []
 
     private let queue: ShuffledVideoQueue<SystemRandomNumberGenerator>
     private var nextStreamId: Int64 = 0
@@ -48,14 +44,4 @@ final class FeedStreamStore: ObservableObject {
         items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
         nextStreamId += 1
     }
-
-    func setKeepAwake(_ awake: Bool, for streamId: Int64) {
-        if awake {
-            keepAwakeVotes.insert(streamId)
-        } else {
-            keepAwakeVotes.remove(streamId)
-        }
-    }
-
-    var keepAwake: Bool { !keepAwakeVotes.isEmpty }
 }
