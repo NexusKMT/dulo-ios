@@ -64,6 +64,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             collectionView.bounces = true
             collectionView.dataSource = coordinator
             collectionView.delegate = coordinator
+            collectionView.prefetchDataSource = coordinator
             collectionView.register(FeedVideoCell.self, forCellWithReuseIdentifier: FeedVideoCell.reuseId)
             collectionView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -134,10 +135,6 @@ struct VerticalPager: UIViewControllerRepresentable {
             viewModel = nil
         }
 
-        func didEndDisplaying() {
-            cleanupHosting()
-        }
-
         func configure(
             item: FeedStreamItem,
             store: FeedStreamStore,
@@ -178,7 +175,7 @@ struct VerticalPager: UIViewControllerRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+    final class Coordinator: NSObject, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UICollectionViewDataSourcePrefetching {
         var store: FeedStreamStore
         var viewModel: FeedViewModel
         weak var controller: FeedCollectionViewController?
@@ -212,16 +209,28 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func collectionView(_ collectionView: UICollectionView,
-                            didEndDisplaying cell: UICollectionViewCell,
-                            forItemAt indexPath: IndexPath) {
-            guard let videoCell = cell as? FeedVideoCell else { return }
-            videoCell.didEndDisplaying()
-        }
-
-        func collectionView(_ collectionView: UICollectionView,
                             layout collectionViewLayout: UICollectionViewLayout,
                             sizeForItemAt indexPath: IndexPath) -> CGSize {
             collectionView.bounds.size
+        }
+
+        // MARK: - UICollectionViewDataSourcePrefetching
+
+        func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+            for indexPath in indexPaths {
+                let index = indexPath.item
+                guard index >= 0, index < store.items.count else { continue }
+                let videoId = store.items[index].video.id
+                Task { [weak viewModel] in
+                    let result = await viewModel?.resolveMedia(id: videoId, force: false)
+                    if case .ready(let lease) = result,
+                       case .images(let urls, _) = lease.value,
+                       let first = urls.first,
+                       let url = URL(string: first) {
+                        ImagePipeline.shared.prefetch(urls: [url])
+                    }
+                }
+            }
         }
 
         // MARK: - Scroll & Midpoint Activation (Play While Dragging)
@@ -268,14 +277,22 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
         }
 
-        /// Pre-resolves media lease for N+2 so by the time user scrolls to N+1,
-        /// N+2 is already warm in LeaseLruCache.
+        /// Pre-resolves media leases and pre-warms cover images for N+1 and N+2
+        /// so by the time user scrolls, leases are warm in LeaseLruCache and cover bitmaps are warm in RAM.
         func preloadAhead(from index: Int) {
-            let target = index + 2
-            guard target < store.items.count else { return }
-            let videoId = store.items[target].video.id
-            Task { [weak viewModel] in
-                await viewModel?.resolveMedia(id: videoId, force: false)
+            for offset in 1...2 {
+                let target = index + offset
+                guard target < store.items.count else { continue }
+                let videoId = store.items[target].video.id
+                Task { [weak viewModel] in
+                    let result = await viewModel?.resolveMedia(id: videoId, force: false)
+                    if case .ready(let lease) = result,
+                       case .images(let urls, _) = lease.value,
+                       let first = urls.first,
+                       let url = URL(string: first) {
+                        ImagePipeline.shared.prefetch(urls: [url])
+                    }
+                }
             }
         }
     }

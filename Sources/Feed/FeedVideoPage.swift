@@ -79,7 +79,6 @@ struct FeedVideoPage: View {
         }
         .onDisappear {
             playerState.player.pause()
-            playerState.player.replaceCurrentItem(with: nil)
         }
         .onAppear {
             playerState.onPlaybackError = { [self] error in
@@ -143,7 +142,8 @@ struct FeedVideoPage: View {
             return
         }
         let playURL = URL(string: playUrl)!
-        if playUrl != preparedUrl {
+        let needsNewItem = (playUrl != preparedUrl) || (playerState.player.currentItem == nil)
+        if needsNewItem {
             // 403 -> renew the lease with force=1 once, mirroring the
             // Android player-error path. Preflight keeps this deterministic:
             // AVFoundation hides HTTP status codes in its errors.
@@ -276,18 +276,14 @@ private struct FastRemoteImage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .task(id: shouldLoad) {
-            if shouldLoad {
-                if image == nil {
-                    if let cached = ImagePipeline.shared.cachedImage(for: url) {
-                        image = cached
-                        return
-                    }
-                    if let loaded = await ImagePipeline.shared.loadImage(for: url) {
-                        image = loaded
-                    }
+            if shouldLoad && image == nil {
+                if let cached = ImagePipeline.shared.cachedImage(for: url) {
+                    image = cached
+                    return
                 }
-            } else {
-                image = nil
+                if let loaded = await ImagePipeline.shared.loadImage(for: url) {
+                    image = loaded
+                }
             }
         }
     }
