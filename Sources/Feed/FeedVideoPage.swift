@@ -296,7 +296,8 @@ final class MotionLoopPlayerController: ObservableObject {
     }
 
     deinit {
-        cleanup()
+        readyWatchdogTask?.cancel()
+        looper?.disableLooping()
     }
 }
 
