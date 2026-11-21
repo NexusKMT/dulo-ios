@@ -65,4 +65,21 @@ final class MediaCacheTests: XCTestCase {
         // Unpinned item should have been evicted to reduce usage below target watermark
         XCTAssertNil(storage.metadata(for: unpinnedKey))
     }
+
+    func testImageDiskCacheStoreAndRead() {
+        let uniqueDir = "TestImageDiskCache_\(UUID().uuidString)"
+        let diskCache = ImageDiskCache(directoryName: uniqueDir)
+        defer { diskCache.clearAll() }
+
+        let testUrl = URL(string: "https://example.com/images/test.jpg?token=abc")!
+        let rawBytes = Data("TestImageDataPayload_12345".utf8)
+
+        XCTAssertFalse(diskCache.contains(url: testUrl))
+        diskCache.store(data: rawBytes, for: testUrl)
+
+        XCTAssertTrue(diskCache.contains(url: testUrl))
+        let fetched = diskCache.data(for: testUrl)
+        XCTAssertNotNil(fetched)
+        XCTAssertEqual(fetched, rawBytes)
+    }
 }

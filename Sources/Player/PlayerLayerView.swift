@@ -24,12 +24,14 @@ struct PlayerLayerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> PlayerLayerContainer {
         let view = PlayerLayerContainer()
-        view.backgroundColor = .black
+        view.backgroundColor = .clear
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         view.playerLayer.player = player
         view.playerLayer.videoGravity = videoGravity
-        view.isHidden = isHidden
+        // NEVER set view.isHidden = true! isHidden suspends CoreAnimation decoding.
+        // Use alpha for smooth micro-fade so hardware decoder pushes frame 0 immediately.
+        view.alpha = isHidden ? 0.0 : 1.0
         CATransaction.commit()
 
         context.coordinator.onReadyForDisplay = onReadyForDisplay
@@ -61,11 +63,11 @@ struct PlayerLayerView: UIViewRepresentable {
             view.playerLayer.videoGravity = videoGravity
             CATransaction.commit()
         }
-        if view.isHidden != isHidden {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            view.isHidden = isHidden
-            CATransaction.commit()
+        let targetAlpha: CGFloat = isHidden ? 0.0 : 1.0
+        if view.alpha != targetAlpha {
+            UIView.animate(withDuration: 0.12) {
+                view.alpha = targetAlpha
+            }
         }
     }
 
@@ -79,6 +81,16 @@ struct PlayerLayerView: UIViewRepresentable {
             CATransaction.setDisableActions(true)
             playerLayer.frame = bounds
             CATransaction.commit()
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                playerLayer.frame = bounds
+                CATransaction.commit()
+            }
         }
     }
 }

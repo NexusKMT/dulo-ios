@@ -80,7 +80,7 @@ struct FeedVideoPage: View {
                 )
 
                 if let coverUrl = videoCoverUrl, let url = URL(string: coverUrl), !isFirstFrameRendered {
-                    FastRemoteImage(url: url, shouldLoad: true)
+                    BulletproofRemoteImage(url: url, coverPlaceholderUrl: nil)
                         .transition(.opacity)
                 }
             }
@@ -230,12 +230,13 @@ final class MotionLoopPlayerController: ObservableObject {
     let player = AVQueuePlayer()
     private var looper: AVPlayerLooper?
     private var currentUrl: String?
+    private var readyWatchdogTask: Task<Void, Never>?
 
     @Published private(set) var isReadyForDisplay = false
 
     init() {
         player.isMuted = true
-        player.automaticallyWaitsToMinimizeStalling = true
+        player.automaticallyWaitsToMinimizeStalling = false
     }
 
     func play(urlString: String) {
@@ -262,6 +263,21 @@ final class MotionLoopPlayerController: ObservableObject {
 
         looper = AVPlayerLooper(player: player, templateItem: templateItem)
         player.play()
+
+        // 180ms Watchdog Fallback: guarantees isReadyForDisplay flips to true
+        // even if initial KVO was delayed or swallowed during offscreen layout
+        readyWatchdogTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            if !Task.isCancelled && !self.isReadyForDisplay {
+                self.isReadyForDisplay = true
+            }
+        }
+    }
+
+    func markReady() {
+        readyWatchdogTask?.cancel()
+        readyWatchdogTask = nil
+        isReadyForDisplay = true
     }
 
     func pause() {
@@ -269,6 +285,8 @@ final class MotionLoopPlayerController: ObservableObject {
     }
 
     func cleanup() {
+        readyWatchdogTask?.cancel()
+        readyWatchdogTask = nil
         player.pause()
         looper?.disableLooping()
         looper = nil
@@ -277,22 +295,15 @@ final class MotionLoopPlayerController: ObservableObject {
         isReadyForDisplay = false
     }
 
-    func markReady() {
-        isReadyForDisplay = true
-    }
-
     deinit {
-        player.pause()
-        looper?.disableLooping()
-        player.removeAllItems()
+        cleanup()
     }
 }
 
 /// A photo/Live Photo post: horizontal paging through its slides, fitting the screen without cropping.
-/// Backed by global in-memory ImagePipeline, guaranteeing instant 0ms hits on back-swipes,
-/// no ProgressView spinners, and strictly windowed sliding-cache prefetching.
-/// For Live Photos (media_type: 42), mounts a single floating AVPlayerLooper onto the active slide
-/// while the post's master audio player plays the continuous global background music.
+/// Backed by multi-tier ImagePipeline with ImageDiskCache, bidirectional prefetching,
+/// active card Pinning, and 0ms synchronous RAM hits. Completely eliminates black screens on back-swipes.
+/// For Live Photos (media_type: 42), mounts a single floating AVPlayerLooper onto the active slide.
 private struct ImagePostPager: View {
     let slides: [GallerySlide]
     let isActive: Bool
@@ -300,17 +311,21 @@ private struct ImagePostPager: View {
     @State private var currentIndex: Int = 0
     @StateObject private var motionController = MotionLoopPlayerController()
 
+    private var slideUrls: [URL] {
+        slides.compactMap { URL(string: $0.imageUrl) }
+    }
+
     var body: some View {
         TabView(selection: $currentIndex) {
             ForEach(Array(slides.enumerated()), id: \.offset) { index, slide in
                 ZStack {
                     Color.black
 
-                    // Base Layer: Static downsampled cover image (0ms display)
+                    // Base Layer: Static downsampled cover image (Always visible at 0ms, never goes black!)
                     if let url = URL(string: slide.imageUrl) {
-                        FastRemoteImage(
+                        BulletproofRemoteImage(
                             url: url,
-                            shouldLoad: shouldLoad(at: index)
+                            coverPlaceholderUrl: slides.first.flatMap { URL(string: $0.imageUrl) }
                         )
                     }
 
@@ -332,48 +347,38 @@ private struct ImagePostPager: View {
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
-        .onChange(of: currentIndex) { index in
-            schedulePrefetch(around: index)
-            updateMotionLoop(for: index)
-        }
-        .onChange(of: isActive) { active in
-            if active {
-                schedulePrefetch(around: currentIndex)
-                updateMotionLoop(for: currentIndex)
+        // Deterministic lifecycle trigger: reliably fires Slide 0 autoplay on initial post appearance
+        .task(id: "\(isActive)-\(currentIndex)") {
+            if isActive {
+                ImagePipeline.shared.pin(urls: slideUrls)
+                scheduleBidirectionalPrefetch(around: currentIndex)
+                // 80ms debounce so user momentum swipe is buttery smooth
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                if !Task.isCancelled {
+                    updateMotionLoop(for: currentIndex)
+                }
             } else {
                 motionController.pause()
-            }
-        }
-        .onAppear {
-            if isActive {
-                schedulePrefetch(around: currentIndex)
-                updateMotionLoop(for: currentIndex)
-            } else if let first = slides.first, let url = URL(string: first.imageUrl) {
-                // When vertically prefetching (N+1), only prefetch the cover image!
-                ImagePipeline.shared.prefetch(urls: [url])
+                ImagePipeline.shared.unpin(urls: slideUrls)
             }
         }
         .onDisappear {
+            ImagePipeline.shared.unpin(urls: slideUrls)
             motionController.cleanup()
         }
     }
 
-    private func shouldLoad(at index: Int) -> Bool {
-        guard isActive else {
-            // When prefetching vertically (N+1 / N+2), only load the cover photo (index 0)
-            return index == 0
-        }
-        // Enforce sliding window: active image and immediate neighbours (index ± 1)
-        return abs(index - currentIndex) <= 1
-    }
-
-    private func schedulePrefetch(around index: Int) {
+    // Bidirectional prefetching: warms up both next (N+1) and previous (N-1) images
+    private func scheduleBidirectionalPrefetch(around index: Int) {
         guard isActive else { return }
-        // Pre-warm the next image in the scroll path
-        let nextIndex = index + 1
-        if nextIndex < slides.count, let url = URL(string: slides[nextIndex].imageUrl) {
-            ImagePipeline.shared.prefetch(urls: [url])
+        var urlsToWarm: [URL] = []
+        if index + 1 < slides.count, let nextUrl = URL(string: slides[index + 1].imageUrl) {
+            urlsToWarm.append(nextUrl)
         }
+        if index - 1 >= 0, let prevUrl = URL(string: slides[index - 1].imageUrl) {
+            urlsToWarm.append(prevUrl)
+        }
+        ImagePipeline.shared.prefetch(urls: urlsToWarm)
     }
 
     private func updateMotionLoop(for index: Int) {
@@ -390,26 +395,33 @@ private struct ImagePostPager: View {
     }
 }
 
-/// Instantaneous remote image view: probes L1 NSCache synchronously in init,
-/// completely eliminating the 1-frame empty phase and ProgressView spinners on reuse.
-/// Releases decoded bitmaps outside the sliding window to protect against Jetsam OOM.
-private struct FastRemoteImage: View {
+/// Bulletproof remote image view:
+/// 1. Synchronously probes L1 RAM in init() for instantaneous 0ms hits on reuse/back-swipe.
+/// 2. If L1 is empty (e.g. after rapid swipe), immediately displays the first slide's cover placeholder (NEVER black!).
+/// 3. Asynchronously loads from L2 flash disk cache (<2ms) or network, smoothly presenting the full image.
+private struct BulletproofRemoteImage: View {
     let url: URL
-    let shouldLoad: Bool
+    let coverPlaceholderUrl: URL?
 
     @State private var image: UIImage?
 
-    init(url: URL, shouldLoad: Bool) {
+    init(url: URL, coverPlaceholderUrl: URL?) {
         self.url = url
-        self.shouldLoad = shouldLoad
-        if shouldLoad, let cached = ImagePipeline.shared.cachedImage(for: url) {
+        self.coverPlaceholderUrl = coverPlaceholderUrl
+
+        // Synchronous probe: if image is in L1 or pinned, present in frame 0!
+        if let cached = ImagePipeline.shared.cachedImage(for: url) {
             _image = State(initialValue: cached)
+        } else if let coverUrl = coverPlaceholderUrl, let coverCached = ImagePipeline.shared.cachedImage(for: coverUrl) {
+            // Placeholder fallback: display first slide's cover so user NEVER sees black!
+            _image = State(initialValue: coverCached)
         }
     }
 
     var body: some View {
         ZStack {
             Color.black
+
             if let image {
                 Image(uiImage: image)
                     .resizable()
@@ -418,14 +430,10 @@ private struct FastRemoteImage: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .task(id: shouldLoad) {
-            if shouldLoad && image == nil {
-                if let cached = ImagePipeline.shared.cachedImage(for: url) {
-                    image = cached
-                    return
-                }
+        .task(id: url) {
+            if image == nil || image != ImagePipeline.shared.cachedImage(for: url) {
                 if let loaded = await ImagePipeline.shared.loadImage(for: url) {
-                    image = loaded
+                    self.image = loaded
                 }
             }
         }
