@@ -16,9 +16,9 @@ enum PlayerFactory {
 
     /// One item per prepare; the asset carries the CDN headers. Resuming after
     /// a lease renewal replaces the item, never mutates the old one.
-    static func makeItem(url: String) -> AVPlayerItem {
+    static func makeItem(url: URL) -> AVPlayerItem {
         let asset = AVURLAsset(
-            url: URL(string: url)!,
+            url: url,
             options: [AVURLAssetHTTPHeaderFieldsKey: httpHeaders]
         )
         return AVPlayerItem(asset: asset)

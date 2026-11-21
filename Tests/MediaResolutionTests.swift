@@ -1,4 +1,5 @@
 import XCTest
+@testable import Dulo
 
 final class MediaResolutionTests: XCTestCase {
     func testNetworkFailureGetsOnlyOneRetry() {

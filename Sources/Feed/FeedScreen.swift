@@ -1,5 +1,10 @@
 import SwiftUI
 
+#if canImport(UIKit)
+import UIKit
+import Darwin
+#endif
+
 /// Portrait, zero-UI vertical video feed. Port of the Android `FeedScreen`.
 struct FeedScreen: View {
     @ObservedObject var viewModel: FeedViewModel

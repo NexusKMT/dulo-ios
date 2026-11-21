@@ -142,6 +142,11 @@ struct FeedVideoPage: View {
             playerState.player.pause()
             return
         }
+        guard URL(string: playUrl) != nil else {
+            playbackFailed = true
+            return
+        }
+        let playURL = URL(string: playUrl)!
         if playUrl != preparedUrl {
             // 403 -> renew the lease with force=1 once, mirroring the
             // Android player-error path. Preflight keeps this deterministic:
@@ -158,12 +163,12 @@ struct FeedVideoPage: View {
                 return
             }
             let resumeAt = (preparedUrl == nil) ? CMTime.zero : playerState.player.currentTime()
-            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playUrl))
+            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL))
             preparedUrl = playUrl
             if resumeAt.seconds > 0 { playerState.player.seek(to: resumeAt) }
         } else if isActive, playerState.player.currentItem?.error != nil {
             // Retry a failed prepare; deferred to activation for neighbours.
-            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playUrl))
+            playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL))
         }
         if shouldPlay {
             playerState.player.play()

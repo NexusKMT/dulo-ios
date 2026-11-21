@@ -1,4 +1,5 @@
 import XCTest
+@testable import Dulo
 
 final class LeaseLruCacheTests: XCTestCase {
     func testAccessMovesLeaseToMostRecentlyUsedBeforeEviction() {
