@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Asynchronous, zero-main-thread-overhead batching telemetry exporter.
 /// Buffers telemetry events in a fixed-size ring buffer and flushes them to the server.

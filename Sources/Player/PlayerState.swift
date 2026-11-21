@@ -90,7 +90,7 @@ final class PlayerState: ObservableObject {
 
     deinit {
         if let tid = openavtTrackerId {
-            openavtInstrument?.removeTracker(trackerId: tid)
+            _ = openavtInstrument?.removeTracker(tid)
         }
         timeObservation?.invalidate()
         itemObservation?.invalidate()
