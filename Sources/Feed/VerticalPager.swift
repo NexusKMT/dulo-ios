@@ -59,7 +59,6 @@ struct VerticalPager: UIViewControllerRepresentable {
             collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
             collectionView.backgroundColor = .black
             collectionView.isPagingEnabled = true
-            collectionView.isPrefetchingEnabled = false
             collectionView.showsVerticalScrollIndicator = false
             collectionView.contentInsetAdjustmentBehavior = .never
             collectionView.bounces = true

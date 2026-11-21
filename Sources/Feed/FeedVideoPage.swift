@@ -68,10 +68,7 @@ struct FeedVideoPage: View {
             playerState.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             playerState.player.play()
         }
-        .task(id: "\(video.id)|\(store.activeStreamId)") {
-            guard store.isNearActive(streamId: streamId) else { return }
-            await resolveOnce()
-        }
+        .task(id: video.id) { await resolveOnce() }
         .task(id: prepareToken) { await prepareOnce() }
         .onChange(of: shouldPlay) { play in
             if play {

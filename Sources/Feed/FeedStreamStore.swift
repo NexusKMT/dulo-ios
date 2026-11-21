@@ -44,13 +44,4 @@ final class FeedStreamStore: ObservableObject {
         items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
         nextStreamId += 1
     }
-
-    /// True if this streamId is either the active page or the immediate next neighbour.
-    func isNearActive(streamId: Int64) -> Bool {
-        guard let activeIndex = items.firstIndex(where: { $0.streamId == activeStreamId }),
-              let itemIndex = items.firstIndex(where: { $0.streamId == streamId }) else {
-            return false
-        }
-        return itemIndex == activeIndex || itemIndex == activeIndex + 1
-    }
 }
