@@ -242,8 +242,18 @@ struct VerticalPager: UIViewControllerRepresentable {
             guard pageHeight > 0 else { return }
             let offsetY = scrollView.contentOffset.y
 
-            // Smooth threshold handoff: video keeps playing during 0%~50% drag
-            // When passing 50% midpoint, activeStreamId transitions seamlessly
+            // 1. Precise Viewport Tracking: identify cells physically intersecting the screen
+            let topIndex = max(0, Int(floor(offsetY / pageHeight)))
+            let bottomIndex = min(store.items.count - 1, Int(floor((offsetY + pageHeight - 1.0) / pageHeight)))
+            var visibleIds: Set<Int64> = []
+            for i in topIndex...bottomIndex {
+                visibleIds.insert(store.items[i].streamId)
+            }
+            if store.visibleStreamIds != visibleIds {
+                store.visibleStreamIds = visibleIds
+            }
+
+            // 2. Playback Focus Handoff at Midpoint (Play While Dragging)
             let targetIndex = Int((offsetY + pageHeight * 0.5) / pageHeight)
             if targetIndex >= 0 && targetIndex < store.items.count {
                 let targetId = store.items[targetIndex].streamId
@@ -256,9 +266,23 @@ struct VerticalPager: UIViewControllerRepresentable {
                         cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
                         isCacheHit: isCached
                     )
-                    let nextIndex = targetIndex + 1
-                    store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
                     preloadAhead(from: targetIndex)
+                }
+            }
+
+            // 3. Strict 2-Decoder Ceiling:
+            // When multiple cells are visible (during drag), they consume both hardware decoders.
+            // Release any off-screen prewarm decoder immediately.
+            // When only 1 cell is visible (settled or near-settled), allocate second decoder to prewarm next.
+            if visibleIds.count <= 1 {
+                let nextIndex = targetIndex + 1
+                let nextPrewarm = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
+                if store.prewarmStreamId != nextPrewarm {
+                    store.prewarmStreamId = nextPrewarm
+                }
+            } else {
+                if store.prewarmStreamId != nil {
+                    store.prewarmStreamId = nil
                 }
             }
 
@@ -283,6 +307,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 if store.activeStreamId != targetId {
                     store.activeStreamId = targetId
                 }
+                store.visibleStreamIds = [targetId]
                 let nextIndex = index + 1
                 store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
                 store.appendNextIfNeeded(near: index)

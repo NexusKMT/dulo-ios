@@ -29,9 +29,10 @@ struct FeedVideoPage: View {
         _lease = State(initialValue: viewModel.cachedLease(for: video.id))
     }
 
+    private var isVisibleOnScreen: Bool { store.visibleStreamIds.contains(streamId) }
     private var isActive: Bool { store.activeStreamId == streamId }
     private var isPrewarm: Bool { store.prewarmStreamId == streamId }
-    private var shouldHoldPlayerItem: Bool { isActive || isPrewarm }
+    private var shouldHoldPlayerItem: Bool { isActive || isVisibleOnScreen || isPrewarm }
     private var shouldPlay: Bool { isActive && store.sceneActive }
 
     private var media: ResolvedMedia? { lease?.value }
@@ -70,10 +71,16 @@ struct FeedVideoPage: View {
             if case .images(_, _, let slides)? = media {
                 ImagePostPager(slides: slides, isActive: isActive)
             } else {
+                // Tier 0: Permanent Cover Image Base Layer (Always rendered underneath, guaranteed zero black screen)
+                if let coverUrl = videoCoverUrl, let url = URL(string: coverUrl) {
+                    BulletproofRemoteImage(url: url)
+                }
+
+                // Tier 1: Hardware-accelerated Video Layer (Fades in over cover when frame 0 is ready)
                 PlayerLayerView(
                     player: playerState.player,
                     videoGravity: usesFitGravity ? .resizeAspect : .resizeAspectFill,
-                    isHidden: false,
+                    isHidden: !isFirstFrameRendered,
                     onReadyForDisplay: {
                         AVTelemetryTracker.shared.recordReadyForDisplay(for: video.id)
                         withAnimation(.linear(duration: 0.12)) {
@@ -81,11 +88,6 @@ struct FeedVideoPage: View {
                         }
                     }
                 )
-
-                if let coverUrl = videoCoverUrl, let url = URL(string: coverUrl), !isFirstFrameRendered {
-                    BulletproofRemoteImage(url: url)
-                        .transition(.opacity)
-                }
             }
         }
         .clipped()
@@ -145,16 +147,17 @@ struct FeedVideoPage: View {
 
     private var prepareToken: String {
         "\(playUrl ?? "-")|\(lease?.expiresAtElapsedMs ?? 0)|\(retryNonce)" +
-        "|\(shouldHoldPlayerItem ? 1 : 0)|\(isActive ? 1 : 0)|\(store.sceneActive ? 1 : 0)"
+        "|\(shouldHoldPlayerItem ? 1 : 0)|\(isActive ? 1 : 0)|\(isVisibleOnScreen ? 1 : 0)|\(store.sceneActive ? 1 : 0)"
     }
 
     private func prepareOnce() async {
-        // Strict hardware decoder budget (Max 2 on A9): release decoder if neither active nor prewarm
+        // Strict hardware decoder budget (Max 2 on A9): release decoder if neither active, visible, nor prewarm
         guard shouldHoldPlayerItem else {
             if playerState.player.currentItem != nil {
                 playerState.player.pause()
                 playerState.clearItem()
                 preparedUrl = nil
+                isFirstFrameRendered = false
             }
             return
         }

@@ -16,6 +16,7 @@ final class FeedStreamStore: ObservableObject {
     @Published private(set) var items: [FeedStreamItem] = []
     @Published var activeStreamId: Int64 = 0
     @Published var prewarmStreamId: Int64? = nil
+    @Published var visibleStreamIds: Set<Int64> = []
     @Published var sceneActive = true
 
     private let queue: ShuffledVideoQueue<SystemRandomNumberGenerator>
@@ -35,6 +36,7 @@ final class FeedStreamStore: ObservableObject {
         }
         if let first = items.first {
             activeStreamId = first.streamId
+            visibleStreamIds = [first.streamId]
         }
         if items.count > 1 {
             prewarmStreamId = items[1].streamId
