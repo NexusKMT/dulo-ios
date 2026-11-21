@@ -144,7 +144,6 @@ struct VerticalPager: UIViewControllerRepresentable {
                 video: item.video,
                 store: store,
                 viewModel: viewModel,
-                playerState: store.playerPool.player(for: item.streamId),
                 onNextVideo: onNextVideo
             ).id(item.streamId)
 
