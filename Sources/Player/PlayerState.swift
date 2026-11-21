@@ -1,0 +1,63 @@
+import AVFoundation
+import Foundation
+import SwiftUI
+
+/// The only playback state the UI-free feed needs: whether the screen should
+/// stay awake, plus the natural display size (drives fit/zoom) and load
+/// failures. Controls, position and scrubbing state were removed with the
+/// control layer itself. Port of the Android `PlayerState`.
+@MainActor
+final class PlayerState: ObservableObject {
+    let player: AVPlayer
+
+    @Published private(set) var isPlaying = false
+    @Published private(set) var presentationSize: CGSize = .zero
+
+    /// Fired when the current item fails to load (mirrors ExoPlayer's
+    /// `onPlayerError`).
+    var onPlaybackError: ((Error?) -> Void)?
+
+    private var timeObservation: NSKeyValueObservation?
+    private var itemObservation: NSKeyValueObservation?
+    private var statusObservation: NSKeyValueObservation?
+    private var sizeObservation: NSKeyValueObservation?
+
+    init() {
+        player = AVPlayer()
+
+        timeObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
+            Task { @MainActor in
+                self?.isPlaying = player.timeControlStatus == .playing
+            }
+        }
+
+        itemObservation = player.observe(\.currentItem, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                statusObservation?.invalidate()
+                sizeObservation?.invalidate()
+                guard let item = player.currentItem else {
+                    presentationSize = .zero
+                    return
+                }
+                statusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+                    if item.status == .failed {
+                        Task { @MainActor in
+                            self?.onPlaybackError?(item.error)
+                        }
+                    }
+                }
+                sizeObservation = item.observe(\.presentationSize, options: [.initial, .new]) { [weak self] item, _ in
+                    Task { @MainActor in
+                        self?.presentationSize = item.presentationSize
+                    }
+                }
+            }
+        }
+    }
+
+    /// Wide videos keep their aspect ratio (FIT); tall ones fill (ZOOM).
+    var usesFitGravity: Bool {
+        presentationSize.width > presentationSize.height
+    }
+}

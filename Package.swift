@@ -1,0 +1,21 @@
+// swift-tools-version:5.9
+// Local fast loop: `swift test` with CommandLineTools, no Xcode required.
+// CI runs the same tests on an iOS simulator via the XcodeGen project.
+import PackageDescription
+
+let package = Package(
+    name: "Dulo",
+    platforms: [.macOS(.v13)],
+    targets: [
+        .target(
+            name: "DuloCore",
+            path: "Sources",
+            sources: ["Data", "Feed/ShuffledVideoQueue.swift"]
+        ),
+        .testTarget(
+            name: "DuloCoreTests",
+            dependencies: ["DuloCore"],
+            path: "Tests"
+        ),
+    ]
+)

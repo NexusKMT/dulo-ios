@@ -1,0 +1,13 @@
+# Xcode / XcodeGen
+Dulo.xcodeproj/
+build/
+DerivedData/
+xcuserdata/
+*.xcarchive
+*.ipa
+
+# SPM
+.build/
+.swiftpm/
+
+.DS_Store
