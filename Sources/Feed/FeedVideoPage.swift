@@ -1,17 +1,17 @@
 import AVFoundation
 import SwiftUI
 
-/// One feed page: owns its AVPlayer, resolves its lease, and drives
-/// play/pause from the pager. Port of the Android `FeedVideoPage`.
+/// One feed page: renders its allocated AVPlayer from FeedPlayerPool, resolves its lease,
+/// and drives play/pause. Port of the Android `FeedVideoPage`.
 @MainActor
 struct FeedVideoPage: View {
     let streamId: Int64
     let video: VideoItem
     @ObservedObject var store: FeedStreamStore
     @ObservedObject var viewModel: FeedViewModel
+    @ObservedObject var playerState: PlayerState
     let onNextVideo: () -> Void
 
-    @StateObject private var playerState = PlayerState()
     @State private var lease: Lease<ResolvedMedia>?
     @State private var resolutionFailed = false
     @State private var playbackFailed = false
@@ -22,11 +22,12 @@ struct FeedVideoPage: View {
     @State private var preparedUrl: String?
 
     init(streamId: Int64, video: VideoItem, store: FeedStreamStore,
-         viewModel: FeedViewModel, onNextVideo: @escaping () -> Void) {
+         viewModel: FeedViewModel, playerState: PlayerState, onNextVideo: @escaping () -> Void) {
         self.streamId = streamId
         self.video = video
         self.store = store
         self.viewModel = viewModel
+        self.playerState = playerState
         self.onNextVideo = onNextVideo
         _lease = State(initialValue: viewModel.cachedLease(for: video.id))
     }
@@ -67,6 +68,7 @@ struct FeedVideoPage: View {
         .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification)) { note in
             guard let item = note.object as? AVPlayerItem,
                   item === playerState.player.currentItem else { return }
+            guard isActive else { return }
             playerState.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
             playerState.player.play()
         }
@@ -75,8 +77,17 @@ struct FeedVideoPage: View {
         .onChange(of: skipToken) { _ in
             if isActive && (resolutionFailed || playbackFailed) { onNextVideo() }
         }
+        .onChange(of: shouldPlay) { play in
+            if play {
+                playerState.player.play()
+            } else {
+                playerState.player.pause()
+            }
+        }
         .onDisappear {
-            playerState.player.pause()
+            if isActive {
+                playerState.player.pause()
+            }
         }
         .onAppear {
             playerState.onPlaybackError = { [self] error in
@@ -164,11 +175,7 @@ struct FeedVideoPage: View {
             // Retry a failed prepare; deferred to activation for neighbours.
             playerState.player.replaceCurrentItem(with: PlayerFactory.makeItem(url: playURL))
         }
-        if shouldPlay {
-            playerState.player.play()
-        } else {
-            playerState.player.pause()
-        }
+        store.playerPool.syncPlayback(activeStreamId: store.activeStreamId, sceneActive: store.sceneActive)
     }
 
     private func handlePlaybackError() {

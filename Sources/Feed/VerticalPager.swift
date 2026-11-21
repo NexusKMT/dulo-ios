@@ -85,9 +85,15 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func update(itemCount: Int) {
-            if itemCount != lastReportedCount {
+            guard let collectionView else { return }
+            if lastReportedCount == 0 {
                 lastReportedCount = itemCount
-                collectionView?.reloadData()
+                collectionView.reloadData()
+            } else if itemCount > lastReportedCount {
+                let start = lastReportedCount
+                lastReportedCount = itemCount
+                let newIndexPaths = (start..<itemCount).map { IndexPath(item: $0, section: 0) }
+                collectionView.insertItems(at: newIndexPaths)
             }
         }
 
@@ -103,6 +109,22 @@ struct VerticalPager: UIViewControllerRepresentable {
     final class FeedVideoCell: UICollectionViewCell {
         static let reuseId = "FeedVideoCell"
         private var hostingController: UIHostingController<AnyView>?
+        private var currentStreamId: Int64?
+
+        override func prepareForReuse() {
+            super.prepareForReuse()
+            cleanupHosting()
+        }
+
+        private func cleanupHosting() {
+            if let host = hostingController {
+                host.willMove(toParent: nil)
+                host.view.removeFromSuperview()
+                host.removeFromParent()
+                hostingController = nil
+            }
+            currentStreamId = nil
+        }
 
         func configure(
             item: FeedStreamItem,
@@ -111,33 +133,34 @@ struct VerticalPager: UIViewControllerRepresentable {
             parent: UIViewController,
             onNextVideo: @escaping () -> Void
         ) {
+            if currentStreamId == item.streamId && hostingController != nil {
+                return
+            }
+            cleanupHosting()
+            currentStreamId = item.streamId
+
             let page = FeedVideoPage(
                 streamId: item.streamId,
                 video: item.video,
                 store: store,
                 viewModel: viewModel,
+                playerState: store.playerPool.player(for: item.streamId),
                 onNextVideo: onNextVideo
             ).id(item.streamId)
 
-            let erased = AnyView(page)
-
-            if let host = hostingController {
-                host.rootView = erased
-            } else {
-                let host = UIHostingController(rootView: erased)
-                host.view.backgroundColor = .black
-                host.view.translatesAutoresizingMaskIntoConstraints = false
-                contentView.addSubview(host.view)
-                NSLayoutConstraint.activate([
-                    host.view.topAnchor.constraint(equalTo: contentView.topAnchor),
-                    host.view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-                    host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-                    host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-                ])
-                parent.addChild(host)
-                host.didMove(toParent: parent)
-                self.hostingController = host
-            }
+            let host = UIHostingController(rootView: AnyView(page))
+            host.view.backgroundColor = .black
+            host.view.translatesAutoresizingMaskIntoConstraints = false
+            contentView.addSubview(host.view)
+            NSLayoutConstraint.activate([
+                host.view.topAnchor.constraint(equalTo: contentView.topAnchor),
+                host.view.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+                host.view.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+                host.view.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            ])
+            parent.addChild(host)
+            host.didMove(toParent: parent)
+            self.hostingController = host
         }
     }
 

@@ -9,13 +9,23 @@ struct FeedStreamItem: Identifiable {
 }
 
 /// Mutable state shared between the vertical pager (UIKit) and the SwiftUI
-/// pages: the growing stream, which page is active, and scene phase.
+/// pages: the growing stream, which page is active, scene phase, and the Dual Player Pool.
 /// Pages observe this store, so UIKit-driven changes re-render SwiftUI.
 @MainActor
 final class FeedStreamStore: ObservableObject {
     @Published private(set) var items: [FeedStreamItem] = []
-    @Published var activeStreamId: Int64 = 0
-    @Published var sceneActive = true
+    @Published var activeStreamId: Int64 = 0 {
+        didSet {
+            playerPool.syncPlayback(activeStreamId: activeStreamId, sceneActive: sceneActive)
+        }
+    }
+    @Published var sceneActive = true {
+        didSet {
+            playerPool.syncPlayback(activeStreamId: activeStreamId, sceneActive: sceneActive)
+        }
+    }
+
+    let playerPool = FeedPlayerPool()
 
     private let queue: ShuffledVideoQueue<SystemRandomNumberGenerator>
     private var nextStreamId: Int64 = 0
