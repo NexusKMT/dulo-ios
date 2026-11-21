@@ -21,7 +21,7 @@ struct FeedScreen: View {
                     .ignoresSafeArea()
                 #endif
             }
-            if viewModel.videos.isEmpty {
+            if viewModel.videos.isEmpty && !viewModel.isLoading {
                 statusOverlay
             }
             exitHotspot
@@ -63,21 +63,17 @@ struct FeedScreen: View {
     /// Empty/error state, mirroring the Android feed's retry surface.
     private var statusOverlay: some View {
         VStack(spacing: 16) {
-            if viewModel.isLoading {
-                ProgressView().tint(.white)
-            } else {
-                Text(viewModel.error ?? "未检测到局域网视频")
-                    .foregroundStyle(.white.opacity(0.7))
-                Button {
-                    viewModel.loadFeed()
-                } label: {
-                    Text("重试")
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 8)
-                        .background(DuloCoral)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
+            Text(viewModel.error ?? "未检测到局域网视频")
+                .foregroundStyle(.white.opacity(0.7))
+            Button {
+                viewModel.loadFeed()
+            } label: {
+                Text("重试")
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
+                    .background(DuloCoral)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
             }
         }
     }
