@@ -25,6 +25,11 @@ struct DuloApp: App {
         PlayerFactory.configureAudioSession()
         LocalMediaProxyServer.shared.start()
         PerformanceMonitor.shared.start()
+        #if canImport(MetricKit)
+        if #available(iOS 14.0, *) {
+            DuloMetricKitSubscriber.shared.start()
+        }
+        #endif
     }
 
     var body: some Scene {

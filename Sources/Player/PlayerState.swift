@@ -26,11 +26,19 @@ final class PlayerState: ObservableObject {
     private var statusObservation: NSKeyValueObservation?
     private var sizeObservation: NSKeyValueObservation?
 
+    private var openavtInstrument: OAVTInstrument?
+    private var openavtTrackerId: Int?
+
     init() {
         player = AVQueuePlayer()
         player.automaticallyWaitsToMinimizeStalling = false
         player.preventsDisplaySleepDuringVideoPlayback = true
         player.actionAtItemEnd = .none
+
+        let instrument = OAVTInstrument(hub: OAVTHubCore(), metricalc: OAVTMetricalcCore(), backend: OAVTBackendRemote())
+        let tracker = OAVTTrackerAVPlayer(player: player)
+        self.openavtTrackerId = instrument.addTracker(tracker)
+        self.openavtInstrument = instrument
 
         timeObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
             Task { @MainActor in
@@ -81,6 +89,9 @@ final class PlayerState: ObservableObject {
     }
 
     deinit {
+        if let tid = openavtTrackerId {
+            openavtInstrument?.removeTracker(trackerId: tid)
+        }
         timeObservation?.invalidate()
         itemObservation?.invalidate()
         statusObservation?.invalidate()

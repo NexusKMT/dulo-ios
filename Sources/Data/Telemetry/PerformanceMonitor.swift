@@ -136,6 +136,8 @@ public final class PerformanceMonitor: ObservableObject {
     }
     #endif
 
+    private var lastTelemetryReportTime: CFTimeInterval = 0.0
+
     private func pollMachMetrics() {
         let footprintBytes = PerformanceMonitor.getPhysFootprintBytes() ?? 0
         let footprintMB = Double(footprintBytes) / (1024.0 * 1024.0)
@@ -146,6 +148,28 @@ public final class PerformanceMonitor: ObservableObject {
             self.currentSnapshot.memoryFootprintMB = footprintMB
             self.currentSnapshot.cpuUsagePercent = cpuUsage
         }
+
+        #if canImport(QuartzCore)
+        let now = CACurrentMediaTime()
+        if now - lastTelemetryReportTime >= 3.0 {
+            lastTelemetryReportTime = now
+            Task { @MainActor [weak self, footprintMB, cpuUsage] in
+                guard let self = self else { return }
+                let snap = self.currentSnapshot
+                let decoders = AVTelemetryTracker.shared.activeDecoderCount
+                RemoteTelemetryExporter.shared.submit(event: [
+                    "event_type": "perf_snapshot",
+                    "fps": snap.fps,
+                    "hitch_ratio_ms_per_sec": snap.hitchRatioMsPerSec,
+                    "dropped_frames": snap.droppedFramesCount,
+                    "memory_mb": footprintMB,
+                    "cpu_percent": cpuUsage,
+                    "thermal_state": "\(snap.thermalState.rawValue)",
+                    "active_decoders": decoders
+                ])
+            }
+        }
+        #endif
     }
 
     // MARK: - Mach Kernel APIs

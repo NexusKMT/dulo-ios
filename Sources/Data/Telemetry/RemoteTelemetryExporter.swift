@@ -27,10 +27,22 @@ public final class RemoteTelemetryExporter {
     public func submit(event: [String: Any]) {
         queue.async { [weak self] in
             guard let self = self else { return }
+            var enriched = event
+            enriched["app_version"] = AppVersion.marketingVersion
+            enriched["build_number"] = AppVersion.buildNumber
+            enriched["version_tag"] = AppVersion.displayString
+            enriched["device_model"] = AppVersion.deviceModelIdentifier
+            #if canImport(UIKit)
+            enriched["os_version"] = UIDevice.current.systemVersion
+            #endif
+            if enriched["timestamp"] == nil {
+                enriched["timestamp"] = Date().timeIntervalSince1970
+            }
+
             if self.buffer.count >= self.maxBufferSize {
                 self.buffer.removeFirst(50)
             }
-            self.buffer.append(event)
+            self.buffer.append(enriched)
             if self.buffer.count >= self.batchFlushThreshold {
                 self.flushInternal()
             }
@@ -52,7 +64,7 @@ public final class RemoteTelemetryExporter {
         let batch = buffer
         buffer.removeAll(keepingCapacity: true)
 
-        guard let endpoint = URL(string: "http://192.168.2.3:8080/api/telemetry"),
+        guard let endpoint = URL(string: "\(AppSettings.serverBaseUrl)/api/telemetry"),
               let jsonData = try? JSONSerialization.data(withJSONObject: batch, options: []) else {
             return
         }

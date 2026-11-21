@@ -92,6 +92,14 @@ private struct FeedDebugHUD: View {
         if let video = store.items.first(where: { $0.streamId == store.activeStreamId })?.video {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
+                    Text(AppVersion.displayString)
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+
                     // ID Row: tap to copy to clipboard
                     Button {
                         copyId(video.id)
