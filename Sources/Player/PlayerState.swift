@@ -1,6 +1,9 @@
 import AVFoundation
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The only playback state the UI-free feed needs: whether the screen should
 /// stay awake, plus the natural display size (drives fit/zoom) and load
@@ -68,7 +71,13 @@ final class PlayerState: ObservableObject {
 
     /// Wide videos keep their aspect ratio (FIT); tall ones fill (ZOOM).
     /// If size is unknown (zero), default to FIT (.resizeAspect) to avoid initial zoom-in pop.
+    /// On iPad, always use FIT to prevent aggressive 42%+ cropping on 4:3 displays.
     var usesFitGravity: Bool {
+        #if canImport(UIKit)
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            return true
+        }
+        #endif
         if presentationSize == .zero { return true }
         return presentationSize.width > presentationSize.height
     }

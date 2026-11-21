@@ -192,7 +192,7 @@ struct FeedVideoPage: View {
     }
 }
 
-/// A photo post: horizontal paging through its images, filling the screen.
+/// A photo post: horizontal paging through its images, fitting the screen without cropping.
 private struct ImagePostPager: View {
     let urls: [String]
 
@@ -206,7 +206,7 @@ private struct ImagePostPager: View {
                         case .success(let image):
                             image
                                 .resizable()
-                                .scaledToFill()
+                                .scaledToFit()
                         case .failure:
                             Color.black
                         case .empty:
