@@ -497,7 +497,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 if isActive {
                     // Play independent BGM
                     if let bgm = currentBgmUrl {
-                        FeedPlayerPool.shared.bgmPlayer.play(urlString: bgm)
+                        FeedPlayerPool.shared.playBgm(urlString: bgm)
                     } else {
                         FeedPlayerPool.shared.bgmPlayer.stop()
                     }
@@ -517,9 +517,8 @@ struct VerticalPager: UIViewControllerRepresentable {
                     }
                 }
             } else if let playUrl = resolvedPlayUrl {
-                // Single Video Post
-                if isActive || isPrewarm {
-                    FeedPlayerPool.shared.bgmPlayer.stop()
+                // Single Video Post: strictly only ONE in playback at any time
+                if isActive {
                     let slot = FeedPlayerPool.shared.acquireSlot(
                         for: item.streamId,
                         visibleStreamIds: store.visibleStreamIds
@@ -529,8 +528,26 @@ struct VerticalPager: UIViewControllerRepresentable {
                         streamId: item.streamId,
                         videoId: item.video.id,
                         playUrl: playUrl,
-                        isMuted: !isActive,
-                        autoplay: isActive ? store.sceneActive : true,
+                        isMuted: false,
+                        autoplay: store.sceneActive,
+                        videoGravity: .resizeAspect
+                    )
+                    if store.sceneActive {
+                        FeedPlayerPool.shared.play(slot: slot)
+                    }
+                } else if isPrewarm {
+                    // Prewarm cell: attaches slot and prepares paused first frame to prevent black flash, but NEVER plays!
+                    let slot = FeedPlayerPool.shared.acquireSlot(
+                        for: item.streamId,
+                        visibleStreamIds: store.visibleStreamIds
+                    )
+                    attach(slot: slot)
+                    slot.prepare(
+                        streamId: item.streamId,
+                        videoId: item.video.id,
+                        playUrl: playUrl,
+                        isMuted: true,
+                        autoplay: false,
                         videoGravity: .resizeAspect
                     )
                 } else {
@@ -656,11 +673,6 @@ struct VerticalPager: UIViewControllerRepresentable {
         var viewModel: FeedViewModel
         weak var controller: FeedCollectionViewController?
 
-        // Gesture state & intent tracking (decoupled visual/audio lifecycle)
-        private var isDraggingGesture = false
-        private var dragStartIndex: Int = 0
-        private var dragStartActiveStreamId: Int64 = 0
-
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
             self.viewModel = viewModel
@@ -717,17 +729,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
         }
 
-        // MARK: - Decoupled Gesture & Intent-Driven Handover (Douyin / TikTok Architecture)
-
-        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-            guard !store.items.isEmpty else { return }
-            let pageHeight = scrollView.bounds.height
-            guard pageHeight > 0 else { return }
-
-            isDraggingGesture = true
-            dragStartIndex = max(0, min(store.items.count - 1, Int(round(scrollView.contentOffset.y / pageHeight))))
-            dragStartActiveStreamId = store.activeStreamId
-        }
+        // MARK: - Scroll & Single-Player Page Settling
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             guard !store.items.isEmpty else { return }
@@ -735,7 +737,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             guard pageHeight > 0 else { return }
             let offsetY = scrollView.contentOffset.y
 
-            // 1. Precise Viewport Tracking (Symmetric 2-Decoder Window)
+            // 1. Precise Viewport Tracking
             let topIndex = max(0, Int(floor(offsetY / pageHeight)))
             let bottomIndex = min(store.items.count - 1, Int(floor((offsetY + pageHeight - 1.0) / pageHeight)))
             var visibleIds: Set<Int64> = []
@@ -748,108 +750,33 @@ struct VerticalPager: UIViewControllerRepresentable {
                 store.visibleStreamIds = visibleIds
             }
 
-            // 2. Intent-Driven Audio Continuity & Ducking:
-            if scrollView.isDragging || isDraggingGesture {
-                // User's finger is actively on screen:
-                // Audio focus strictly remains on departing item (ZERO mid-drag flip-flop).
-                // Duck departing video volume smoothly based on displacement (1.0 -> 0.35).
-                let dragDelta = abs(offsetY - (CGFloat(dragStartIndex) * pageHeight))
-                let dragProgress = min(1.0, dragDelta / pageHeight)
-                let duckVolume = Float(max(0.35, 1.0 - 0.65 * dragProgress))
-                FeedPlayerPool.shared.duckVolume(for: dragStartActiveStreamId, to: duckVolume)
-
-                // The incoming visible cell receives the second decoder and plays in real-time, but MUTED.
-                var secondaryId: Int64? = nil
-                if visibleIds.count > 1 {
-                    for i in topIndex...bottomIndex {
-                        if i >= 0 && i < store.items.count {
-                            let sid = store.items[i].streamId
-                            if sid != dragStartActiveStreamId {
-                                secondaryId = sid
-                                break
-                            }
+            // 2. Prewarm upcoming cell (paused first frame for zero black flash)
+            let currentIndex = max(0, min(store.items.count - 1, Int(round(offsetY / pageHeight))))
+            var secondaryId: Int64? = nil
+            if visibleIds.count > 1 {
+                for i in topIndex...bottomIndex {
+                    if i >= 0 && i < store.items.count {
+                        let sid = store.items[i].streamId
+                        if sid != store.activeStreamId {
+                            secondaryId = sid
+                            break
                         }
                     }
-                }
-                if store.prewarmStreamId != secondaryId {
-                    store.prewarmStreamId = secondaryId
                 }
             } else {
-                // Decelerating or idle:
-                let targetIndex = max(0, min(store.items.count - 1, Int(round(offsetY / pageHeight))))
-                let targetId = store.items[targetIndex].streamId
-                if store.activeStreamId != targetId && !isDraggingGesture {
-                    store.activeStreamId = targetId
+                let nextIndex = currentIndex + 1
+                if nextIndex < store.items.count {
+                    secondaryId = store.items[nextIndex].streamId
                 }
+            }
 
-                var secondaryId: Int64? = nil
-                if visibleIds.count > 1 {
-                    for i in topIndex...bottomIndex {
-                        if i >= 0 && i < store.items.count {
-                            let sid = store.items[i].streamId
-                            if sid != targetId {
-                                secondaryId = sid
-                                break
-                            }
-                        }
-                    }
-                } else {
-                    let nextIndex = targetIndex + 1
-                    if nextIndex < store.items.count {
-                        secondaryId = store.items[nextIndex].streamId
-                    }
-                }
-
-                if store.prewarmStreamId != secondaryId {
-                    store.prewarmStreamId = secondaryId
-                }
+            if store.prewarmStreamId != secondaryId {
+                store.prewarmStreamId = secondaryId
             }
 
             refreshVisibleCells()
 
-            let currentIndex = max(0, Int(offsetY / pageHeight))
             store.appendNextIfNeeded(near: currentIndex)
-        }
-
-        func scrollViewWillEndDragging(
-            _ scrollView: UIScrollView,
-            withVelocity velocity: CGPoint,
-            targetContentOffset: UnsafeMutablePointer<CGPoint>
-        ) {
-            guard !store.items.isEmpty else { return }
-            let pageHeight = scrollView.bounds.height
-            guard pageHeight > 0 else { return }
-
-            let targetY = targetContentOffset.pointee.y
-            let commitIndex = max(0, min(store.items.count - 1, Int(round(targetY / pageHeight))))
-
-            isDraggingGesture = false
-
-            if commitIndex != dragStartIndex {
-                // User committed to swiping to next/previous item (kinetic snap):
-                let committedId = store.items[commitIndex].streamId
-                let videoId = store.items[commitIndex].video.id
-
-                store.activeStreamId = committedId
-                store.prewarmStreamId = (commitIndex + 1 < store.items.count) ? store.items[commitIndex + 1].streamId : nil
-
-                // Instant audio focus handoff with 60ms smooth volume ramp
-                FeedPlayerPool.shared.handoffAudio(from: dragStartActiveStreamId, to: committedId)
-
-                // QoE Telemetry record
-                let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
-                AVTelemetryTracker.shared.recordSwipeTrigger(
-                    for: videoId,
-                    cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
-                    isCacheHit: isCached
-                )
-            } else {
-                // Peek cancelled / snapped back to starting item:
-                // Smoothly restore departing video back to 100% volume
-                FeedPlayerPool.shared.restoreFullVolume(for: dragStartActiveStreamId)
-            }
-
-            refreshVisibleCells()
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -878,16 +805,24 @@ struct VerticalPager: UIViewControllerRepresentable {
             let pageHeight = scrollView.bounds.height
             guard pageHeight > 0 else { return }
             let index = max(0, min(store.items.count - 1, Int(round(scrollView.contentOffset.y / pageHeight))))
+            guard index >= 0, index < store.items.count else { return }
+
             let targetId = store.items[index].streamId
             if store.activeStreamId != targetId {
                 store.activeStreamId = targetId
+                let videoId = store.items[index].video.id
+                let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
+                AVTelemetryTracker.shared.recordSwipeTrigger(
+                    for: videoId,
+                    cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
+                    isCacheHit: isCached
+                )
             }
             store.visibleStreamIds = [targetId]
             let nextIndex = index + 1
             store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
             store.appendNextIfNeeded(near: index)
 
-            FeedPlayerPool.shared.restoreFullVolume(for: targetId)
             refreshVisibleCells()
             preloadAhead(from: index)
         }
