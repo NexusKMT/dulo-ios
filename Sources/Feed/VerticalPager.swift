@@ -205,15 +205,12 @@ struct VerticalPager: UIViewControllerRepresentable {
             motionContainerView.layer.addSublayer(slot.playerLayer)
             CATransaction.commit()
 
-            if slot.isReadyForDisplay {
-                motionContainerView.alpha = 1.0
-            } else {
-                motionContainerView.alpha = 0.0
-                slot.onReadyForDisplay = { [weak self] in
-                    guard let self else { return }
-                    UIView.animate(withDuration: 0.12, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
-                        self.motionContainerView.alpha = 1.0
-                    }
+            // Always start transparent to keep key photo visible until the live video frame decodes
+            motionContainerView.alpha = 0.0
+            slot.onReadyForDisplay = { [weak self] in
+                guard let self else { return }
+                UIView.animate(withDuration: 0.15, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
+                    self.motionContainerView.alpha = 1.0
                 }
             }
         }
@@ -470,7 +467,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.resolvedPlayUrl = nil
                     self.currentBgmUrl = music
 
-                    let effectiveSlides = slides.isEmpty ? urls.enumerated().map { GallerySlide(id: "\($0)", imageUrl: $1) } : slides
+                    let effectiveSlides = slides.isEmpty ? urls.enumerated().map { GallerySlide(id: "\(video.id)_\($0)", imageUrl: $1) } : slides
                     self.currentSlides = effectiveSlides
                     self.currentSlideUrls = effectiveSlides.compactMap { URL(string: $0.imageUrl) }
 
@@ -577,10 +574,11 @@ struct VerticalPager: UIViewControllerRepresentable {
                 guard let cell = self.horizontalCollectionView.cellForItem(at: indexPath) as? GallerySlideCell else { return }
 
                 let slot = FeedPlayerPool.shared.activeSlot
+                let slideKey = "\(self.currentItem?.video.id ?? "feed")_\(slide.id)"
                 cell.attachMotion(slot: slot)
                 slot.prepare(
                     streamId: self.currentItem?.streamId ?? 0,
-                    videoId: slide.id,
+                    videoId: slideKey,
                     playUrl: motionUrl,
                     isMuted: true,
                     autoplay: true,

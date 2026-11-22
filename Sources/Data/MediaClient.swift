@@ -92,11 +92,13 @@ struct MediaClient {
             if let serverSlides = body.slides, !serverSlides.isEmpty {
                 slides = serverSlides.compactMap { s in
                     guard let img = s.imageUrl, !img.isEmpty else { return nil }
-                    return GallerySlide(id: s.id, imageUrl: img, motionVideoUrl: s.videoUrl)
+                    let scopedId = "\(id)_\(s.id)"
+                    return GallerySlide(id: scopedId, imageUrl: img, motionVideoUrl: s.videoUrl)
                 }
             } else {
                 slides = body.images.enumerated().map { (idx, url) in
-                    GallerySlide(id: String(idx), imageUrl: url, motionVideoUrl: nil)
+                    let scopedId = "\(id)_\(idx)"
+                    return GallerySlide(id: scopedId, imageUrl: url, motionVideoUrl: nil)
                 }
             }
             media = .images(urls: body.images, music: body.music, slides: slides)

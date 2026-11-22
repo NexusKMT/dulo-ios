@@ -48,6 +48,24 @@ public final class MediaCacheStorage {
         self.targetDiskSize = targetDiskSize
 
         try? fileManager.createDirectory(at: self.cacheDirectory, withIntermediateDirectories: true)
+        purgeContaminatedLegacyKeys()
+    }
+
+    /// Purges legacy contaminated single/short-digit cache directories (e.g. k_0, k_1)
+    /// caused by un-scoped slide indices from earlier versions.
+    private func purgeContaminatedLegacyKeys() {
+        guard let items = try? fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil) else {
+            return
+        }
+        for item in items {
+            let name = item.lastPathComponent
+            if name.hasPrefix("k_") {
+                let suffix = String(name.dropFirst(2))
+                if !suffix.isEmpty && suffix.allSatisfy({ $0.isNumber }) && suffix.count <= 4 {
+                    try? fileManager.removeItem(at: item)
+                }
+            }
+        }
     }
 
     // MARK: - Key Pinning (Active Video Protection)

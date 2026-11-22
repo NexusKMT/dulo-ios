@@ -11,8 +11,12 @@ public enum MediaCacheKey {
     /// - Returns: A deterministic, filesystem-safe string identifier.
     public static func compute(url: URL, hint: String? = nil) -> String {
         if let hint = hint, !hint.isEmpty {
-            let cleanHint = hint.replacingOccurrences(of: "/", with: "_")
-            return "k_\(cleanHint)"
+            // Reject naked short-number hints to prevent slide index cache collisions
+            let isShortNumber = hint.allSatisfy { $0.isNumber } && hint.count <= 4
+            if !isShortNumber {
+                let cleanHint = hint.replacingOccurrences(of: "/", with: "_")
+                return "k_\(cleanHint)"
+            }
         }
 
         let urlString = url.absoluteString

@@ -116,6 +116,10 @@ public final class FeedPlayerPool {
             looper?.disableLooping()
             looper = nil
             player.removeAllItems()
+            #if canImport(UIKit)
+            playerLayer.player = nil
+            playerLayer.player = player
+            #endif
 
             currentStreamId = streamId
             currentVideoId = videoId
@@ -177,6 +181,8 @@ public final class FeedPlayerPool {
             }
 
             #if canImport(UIKit)
+            playerLayer.player = nil
+            playerLayer.player = player
             if playerLayer.superlayer != nil {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
