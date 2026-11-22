@@ -1,7 +1,8 @@
-import Dispatch
+import Foundation
 
-/// Monotonic milliseconds, mirroring Android's `SystemClock.elapsedRealtime()`.
-/// Wall-clock changes cannot extend or shorten a media lease.
+/// Continuous monotonic time helper.
+/// Uses `ProcessInfo.processInfo.systemUptime` to measure elapsed duration,
+/// avoiding sleep-induced freeze on Darwin.
 func monotonicNowMs() -> Int64 {
-    Int64(bitPattern: DispatchTime.now().uptimeNanoseconds) / 1_000_000
+    Int64(ProcessInfo.processInfo.systemUptime * 1000.0)
 }

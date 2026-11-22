@@ -32,7 +32,7 @@ final class FeedViewModel: ObservableObject {
 
     /// Initial lease for a page, if one is already cached and fresh.
     func cachedLease(for id: String) -> Lease<ResolvedMedia>? {
-        resolvedMediaCache[id].flatMap { $0.isFresh(nowElapsedMs: monotonicNowMs()) ? $0 : nil }
+        resolvedMediaCache[id].flatMap { $0.isFresh() ? $0 : nil }
     }
 
     /// Loads or retries the video feed from the configured server.
@@ -79,7 +79,7 @@ final class FeedViewModel: ObservableObject {
         if inFlight[id]?.requestId == requestId {
             inFlight.removeValue(forKey: id)
             if case .ready(let lease) = result {
-                resolvedMediaCache.put(key: id, lease: lease, nowElapsedMs: monotonicNowMs())
+                resolvedMediaCache.put(key: id, lease: lease)
             }
         }
         return result

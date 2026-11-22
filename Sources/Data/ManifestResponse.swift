@@ -48,8 +48,6 @@ struct SlideResponse: Decodable {
 }
 
 /// Response of GET /resolve/{id}: a media lease with an explicit expiry.
-/// `expiresAt` is carried by the server but the client drives renewal off
-/// `ttlSeconds`, matching the Android client's behaviour.
 struct ResolveResponse: Decodable {
     let url: String?
     let cover: String?
@@ -59,6 +57,7 @@ struct ResolveResponse: Decodable {
     let slides: [SlideResponse]?
     let music: String?
     let mediaType: Int?
+    let expiresAt: Double?
     let ttlSeconds: Int64?
 
     init(from decoder: Decoder) throws {
@@ -71,6 +70,13 @@ struct ResolveResponse: Decodable {
         slides = try? c.decodeIfPresent([SlideResponse].self, forKey: .slides)
         music = try? c.decodeIfPresent(String.self, forKey: .music)
         mediaType = try? c.decodeIfPresent(Int.self, forKey: .mediaType)
+        if let expInt = try? c.decodeIfPresent(Int64.self, forKey: .expiresAt) {
+            expiresAt = Double(expInt)
+        } else if let expDouble = try? c.decodeIfPresent(Double.self, forKey: .expiresAt) {
+            expiresAt = expDouble
+        } else {
+            expiresAt = nil
+        }
         if let intVal = try? c.decodeIfPresent(Int64.self, forKey: .ttlSeconds) {
             ttlSeconds = intVal
         } else if let doubleVal = try? c.decodeIfPresent(Double.self, forKey: .ttlSeconds) {
@@ -81,6 +87,6 @@ struct ResolveResponse: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case url, cover, width, height, images, slides, music, mediaType = "media_type", ttlSeconds
+        case url, cover, width, height, images, slides, music, mediaType = "media_type", expiresAt = "expires_at", ttlSeconds
     }
 }

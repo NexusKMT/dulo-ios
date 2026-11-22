@@ -6,10 +6,5 @@ enum MediaResolution {
     case networkFailure
     case invalidResponse
     case internalFailure
-}
-
-/// Retry one failed network request before the feed advances past the item.
-func shouldRetryResolution(_ result: MediaResolution, retries: Int) -> Bool {
-    if case .networkFailure = result { return retries < 1 }
-    return false
+    case cancelled
 }

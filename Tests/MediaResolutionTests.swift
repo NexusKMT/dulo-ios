@@ -2,14 +2,20 @@ import XCTest
 @testable import Dulo
 
 final class MediaResolutionTests: XCTestCase {
-    func testNetworkFailureGetsOnlyOneRetry() {
-        XCTAssertTrue(shouldRetryResolution(.networkFailure, retries: 0))
-        XCTAssertFalse(shouldRetryResolution(.networkFailure, retries: 1))
-    }
-
-    func testMissingAndServerErrorsAdvanceWithoutRetry() {
-        XCTAssertFalse(shouldRetryResolution(.notFound, retries: 0))
-        XCTAssertFalse(shouldRetryResolution(.httpFailure(statusCode: 502), retries: 0))
+    func testDecodeVideoResolveResponseWithExpiresAt() throws {
+        let json = """
+        {
+            "type": "video",
+            "url": "https://example.com/video.mp4",
+            "expiresAt": 1700000000,
+            "ttlSeconds": 1800,
+            "cached": true
+        }
+        """.data(using: .utf8)!
+        let resp = try JSONDecoder().decode(ResolveResponse.self, from: json)
+        XCTAssertEqual(resp.url, "https://example.com/video.mp4")
+        XCTAssertEqual(resp.expiresAt, 1700000000)
+        XCTAssertEqual(resp.ttlSeconds, 1800)
     }
 
     func testDecodeVideoResolveResponseWithoutImagesField() throws {

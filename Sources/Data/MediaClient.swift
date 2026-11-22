@@ -72,6 +72,10 @@ struct MediaClient {
         let response: URLResponse
         do {
             (data, response) = try await session.data(from: url)
+        } catch let urlErr as URLError where urlErr.code == .cancelled {
+            return .cancelled
+        } catch is CancellationError {
+            return .cancelled
         } catch {
             return .networkFailure
         }
@@ -107,8 +111,14 @@ struct MediaClient {
         } else {
             return .notFound
         }
-        let ttlSeconds = max(body.ttlSeconds ?? Self.defaultTtlSeconds, 1)
-        return .ready(Lease(media, expiresAtElapsedMs: monotonicNowMs() + ttlSeconds * 1000))
+        let ttlSeconds = max(TimeInterval(body.ttlSeconds ?? Self.defaultTtlSeconds), 1.0)
+        let expiresAt: Date
+        if let serverEpoch = body.expiresAt, serverEpoch > 0 {
+            expiresAt = Date(timeIntervalSince1970: serverEpoch)
+        } else {
+            expiresAt = Date().addingTimeInterval(ttlSeconds)
+        }
+        return .ready(Lease(media, expiresAt: expiresAt))
     }
 }
 

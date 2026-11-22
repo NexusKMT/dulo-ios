@@ -4,11 +4,11 @@ import XCTest
 final class LeaseLruCacheTests: XCTestCase {
     func testAccessMovesLeaseToMostRecentlyUsedBeforeEviction() {
         let cache = LeaseLruCache<String>(maxSize: 2)
-        cache.put(key: "first", lease: lease("first"), nowElapsedMs: 0)
-        cache.put(key: "second", lease: lease("second"), nowElapsedMs: 0)
+        cache.put(key: "first", lease: lease("first"))
+        cache.put(key: "second", lease: lease("second"))
 
         XCTAssertEqual("first", cache["first"]?.value)
-        cache.put(key: "third", lease: lease("third"), nowElapsedMs: 0)
+        cache.put(key: "third", lease: lease("third"))
 
         XCTAssertTrue(cache.contains("first"), "the accessed lease stays resident")
         XCTAssertFalse(cache.contains("second"), "the least-recently-used lease is evicted")
@@ -16,20 +16,17 @@ final class LeaseLruCacheTests: XCTestCase {
         XCTAssertEqual(2, cache.size)
     }
 
-    func testExpiredLeasesArePrunedBeforeTheNextWrite() {
+    func testExpiredLeasesArePrunedOnAccess() {
         let cache = LeaseLruCache<String>(maxSize: 2)
-        cache.put(key: "expired", lease: Lease("expired", expiresAtElapsedMs: 10), nowElapsedMs: 0)
-        cache.put(key: "fresh", lease: Lease("fresh", expiresAtElapsedMs: 100), nowElapsedMs: 0)
-
-        cache.put(key: "next", lease: Lease("next", expiresAtElapsedMs: 100), nowElapsedMs: 10)
+        cache.put(key: "expired", lease: Lease("expired", expiresAt: Date().addingTimeInterval(-10)))
+        cache.put(key: "fresh", lease: Lease("fresh", expiresAt: Date().addingTimeInterval(100)))
 
         XCTAssertNil(cache["expired"])
+        XCTAssertFalse(cache.contains("expired"))
         XCTAssertEqual("fresh", cache["fresh"]?.value)
-        XCTAssertEqual("next", cache["next"]?.value)
-        XCTAssertEqual(2, cache.size)
     }
 
     private func lease(_ value: String) -> Lease<String> {
-        Lease(value, expiresAtElapsedMs: 100)
+        Lease(value, expiresAt: Date().addingTimeInterval(100))
     }
 }

@@ -416,7 +416,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentTask = Task { @MainActor [weak self] in
                 guard let self else { return }
                 var lease = viewModel.cachedLease(for: video.id)
-                if lease == nil || !lease!.isFresh(nowElapsedMs: monotonicNowMs()) {
+                if lease == nil || !lease!.isFresh() {
                     let result = await viewModel.resolveMedia(id: video.id, force: false)
                     if case .ready(let fresh) = result {
                         lease = fresh

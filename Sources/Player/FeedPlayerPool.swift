@@ -31,8 +31,6 @@ public final class FeedPlayerPool {
         public private(set) var currentVideoId: String?
         public private(set) var currentPlayUrl: String?
 
-        private var openavtInstrument: OAVTInstrument?
-        private var openavtTrackerId: Int?
         private var hasRegisteredDecoder = false
 
         public func setMuted(_ muted: Bool) {
@@ -56,14 +54,10 @@ public final class FeedPlayerPool {
                       let currentItem = self.player.currentItem,
                       (notification.object as? AVPlayerItem) === currentItem else { return }
                 self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                    self?.player.play()
+                    guard let self = self, self.player.timeControlStatus != .paused else { return }
+                    self.player.play()
                 }
             }
-
-            let instrument = OAVTInstrument(hub: OAVTHubCore(), metricalc: OAVTMetricalcCore(), backend: OAVTBackendRemote())
-            let tracker = OAVTTrackerAVPlayer(player: player)
-            self.openavtTrackerId = instrument.addTracker(tracker)
-            self.openavtInstrument = instrument
         }
 
         public func prepare(
@@ -75,8 +69,8 @@ public final class FeedPlayerPool {
             videoGravity: AVLayerVideoGravity = .resizeAspect,
             disableAudioTracks: Bool = false
         ) {
-            player.isMuted = isMuted
-            player.volume = isMuted ? 0.0 : 1.0
+            let effectiveMuted = isMuted || disableAudioTracks
+            setMuted(effectiveMuted)
 
             if currentStreamId == streamId && currentPlayUrl == playUrl && player.currentItem != nil {
                 if autoplay {
