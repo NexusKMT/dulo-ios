@@ -70,9 +70,9 @@ struct ResolveResponse: Decodable {
         slides = try? c.decodeIfPresent([SlideResponse].self, forKey: .slides)
         music = try? c.decodeIfPresent(String.self, forKey: .music)
         mediaType = try? c.decodeIfPresent(Int.self, forKey: .mediaType)
-        if let expInt = try? c.decodeIfPresent(Int64.self, forKey: .expiresAt) {
-            expiresAt = Double(expInt)
-        } else if let expDouble = try? c.decodeIfPresent(Double.self, forKey: .expiresAt) {
+        if let exp = (try? c.decodeIfPresent(Int64.self, forKey: .expiresAt)) ?? (try? c.decodeIfPresent(Int64.self, forKey: .expiresAtSnake)) {
+            expiresAt = Double(exp)
+        } else if let expDouble = (try? c.decodeIfPresent(Double.self, forKey: .expiresAt)) ?? (try? c.decodeIfPresent(Double.self, forKey: .expiresAtSnake)) {
             expiresAt = expDouble
         } else {
             expiresAt = nil
@@ -87,6 +87,6 @@ struct ResolveResponse: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case url, cover, width, height, images, slides, music, mediaType = "media_type", expiresAt = "expires_at", ttlSeconds
+        case url, cover, width, height, images, slides, music, mediaType = "media_type", expiresAt, expiresAtSnake = "expires_at", ttlSeconds
     }
 }
