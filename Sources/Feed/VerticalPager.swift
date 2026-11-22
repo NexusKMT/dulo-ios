@@ -762,8 +762,8 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func resumePlayback() {
             guard store.sceneActive else { return }
-            guard let activeId = store.activeStreamId,
-                  let activeCell = controller?.collectionView.visibleCells.compactMap({ $0 as? FeedVideoCell }).first(where: { $0.currentItem?.streamId == activeId }) else {
+            let activeId = store.activeStreamId
+            guard let activeCell = controller?.collectionView.visibleCells.compactMap({ $0 as? FeedVideoCell }).first(where: { $0.currentItem?.streamId == activeId }) else {
                 refreshVisibleCells()
                 return
             }
