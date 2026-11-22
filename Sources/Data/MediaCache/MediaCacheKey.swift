@@ -8,14 +8,14 @@ public enum MediaCacheKey {
     /// - Parameters:
     ///   - url: The remote video or audio URL.
     ///   - hint: An optional high-level identifier (e.g. `aweme_id` or `slide_id`).
-    /// - Returns: A deterministic, filesystem-safe string identifier.
+    /// - Returns: A deterministic, filesystem-safe string identifier prefixed with `k_`.
     public static func compute(url: URL, hint: String? = nil) -> String {
         if let hint = hint, !hint.isEmpty {
             // Reject naked short-number hints to prevent slide index cache collisions
             let isShortNumber = hint.allSatisfy { $0.isNumber } && hint.count <= 4
             if !isShortNumber {
                 let cleanHint = hint.replacingOccurrences(of: "/", with: "_")
-                return "k_\(cleanHint)"
+                return key(for: cleanHint)
             }
         }
 
@@ -27,7 +27,7 @@ public enum MediaCacheKey {
             let endIdx = sub.firstIndex(of: "?") ?? sub.endIndex
             let canonicalTos = String(sub[..<endIdx]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             if !canonicalTos.isEmpty {
-                return sha256Hex(canonicalTos)
+                return key(for: sha256Hex(canonicalTos))
             }
         }
 
@@ -36,11 +36,16 @@ public enum MediaCacheKey {
             components.query = nil
             components.fragment = nil
             if let cleanUrl = components.string {
-                return sha256Hex(cleanUrl)
+                return key(for: sha256Hex(cleanUrl))
             }
         }
 
-        return sha256Hex(urlString)
+        return key(for: sha256Hex(urlString))
+    }
+
+    /// Normalizes any identifier to have the standard `k_` prefix.
+    public static func key(for identifier: String) -> String {
+        identifier.hasPrefix("k_") ? identifier : "k_\(identifier)"
     }
 
     private static func sha256Hex(_ string: String) -> String {

@@ -142,6 +142,7 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
         if reachedLimit {
             dataTask.cancel()
             cleanupTask(dataTask.taskIdentifier, key: key)
+            storage.flushMetadata(for: key)
         }
     }
 
@@ -151,6 +152,7 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
         lock.unlock()
         if let key = key {
             cleanupTask(task.taskIdentifier, key: key)
+            storage.flushMetadata(for: key)
         }
     }
 
@@ -168,8 +170,8 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
     public func cancel(key: String) {
         lock.lock()
         defer { lock.unlock() }
-        let cleanKey = key.hasPrefix("k_") ? key : "k_\(key)"
-        if let task = activeTasks.removeValue(forKey: cleanKey) {
+        let canonicalKey = MediaCacheKey.key(for: key)
+        if let task = activeTasks.removeValue(forKey: canonicalKey) ?? activeTasks.removeValue(forKey: key) {
             task.cancel()
             taskContexts.removeValue(forKey: task.taskIdentifier)
         }
@@ -177,21 +179,17 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
 
     public func cancel(url: URL, key: String? = nil) {
         let cacheKey = MediaCacheKey.compute(url: url, hint: key)
-        lock.lock()
-        defer { lock.unlock() }
-        if let task = activeTasks.removeValue(forKey: cacheKey) {
-            task.cancel()
-            taskContexts.removeValue(forKey: task.taskIdentifier)
-        }
+        cancel(key: cacheKey)
     }
 
     public func cancelAllExcept(retainedKeys: Set<String>) {
         lock.lock()
         defer { lock.unlock() }
+        let canonicalRetained = Set(retainedKeys.map { MediaCacheKey.key(for: $0) })
         var toRemove: [String] = []
         for (key, task) in activeTasks {
             let bareKey = key.hasPrefix("k_") ? String(key.dropFirst(2)) : key
-            if !retainedKeys.contains(key) && !retainedKeys.contains(bareKey) {
+            if !canonicalRetained.contains(key) && !retainedKeys.contains(bareKey) {
                 task.cancel()
                 taskContexts.removeValue(forKey: task.taskIdentifier)
                 toRemove.append(key)

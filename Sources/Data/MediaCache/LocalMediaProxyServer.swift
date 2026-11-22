@@ -6,7 +6,7 @@ import Darwin
 
 /// Lightweight loopback HTTP/1.1 reverse proxy running on `127.0.0.1`.
 /// Intercepts video/audio streaming requests from AVPlayer, transparently serves
-/// cached slices (e.g. 1MB pre-buffers) from disk with 0ms latency, streams missing
+/// cached slices (e.g. 800KB pre-buffers) from disk with 0ms latency, streams missing
 /// chunks from CDN while appending to disk cache, and injects required CDN headers.
 public final class LocalMediaProxyServer {
     public static let shared = LocalMediaProxyServer()
@@ -182,20 +182,34 @@ public final class LocalMediaProxyServer {
         let cacheKey = MediaCacheKey.compute(url: remoteUrl, hint: hintKey)
         storage.touch(key: cacheKey)
         storage.pin(key: cacheKey)
+        defer {
+            storage.unpin(key: cacheKey)
+            storage.flushMetadata(for: cacheKey)
+        }
+
         // Coalesce request: cancel active background preload task since player is taking over streaming
         MediaPreloadManager.shared.cancel(key: cacheKey)
 
-        // Parse Range Header
+        // Parse Range Header (RFC 7233 / RFC 9110)
         var requestedRange: (start: Int64, end: Int64?)?
+        var requestedSuffix: Int64?
+
         for line in lines {
             if line.lowercased().hasPrefix("range:") {
                 let rangeVal = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
                 if rangeVal.hasPrefix("bytes=") {
-                    let spec = rangeVal.dropFirst(6)
-                    let rangeParts = spec.components(separatedBy: "-")
-                    if let start = Int64(rangeParts[0]) {
-                        let end = rangeParts.count > 1 ? Int64(rangeParts[1]) : nil
-                        requestedRange = (start, end)
+                    let spec = String(rangeVal.dropFirst(6).trimmingCharacters(in: .whitespaces))
+                    if spec.hasPrefix("-") {
+                        // Suffix range: bytes=-32768 (e.g. AVPlayer requesting MP4 moov atom from EOF)
+                        if let suffix = Int64(spec.dropFirst()) {
+                            requestedSuffix = suffix
+                        }
+                    } else {
+                        let rangeParts = spec.components(separatedBy: "-")
+                        if let start = Int64(rangeParts[0]) {
+                            let end = (rangeParts.count > 1 && !rangeParts[1].isEmpty) ? Int64(rangeParts[1]) : nil
+                            requestedRange = (start, end)
+                        }
                     }
                 }
             }
@@ -211,8 +225,8 @@ public final class LocalMediaProxyServer {
         }
 
         guard let currentMeta = meta, currentMeta.contentLength > 0 else {
-            // Cannot probe upstream; send 502
-            let err = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+            // Cannot probe upstream; send 502 with Connection: close
+            let err = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             sendString(clientFd, err)
             return
         }
@@ -220,16 +234,24 @@ public final class LocalMediaProxyServer {
         let totalLength = currentMeta.contentLength
         let contentType = currentMeta.contentType.isEmpty ? "video/mp4" : currentMeta.contentType
 
-        let reqStart = requestedRange?.start ?? 0
-        let reqEnd = min(requestedRange?.end ?? (totalLength - 1), totalLength - 1)
+        let reqStart: Int64
+        let reqEnd: Int64
+        if let suffix = requestedSuffix {
+            reqStart = max(0, totalLength - suffix)
+            reqEnd = totalLength - 1
+        } else {
+            reqStart = requestedRange?.start ?? 0
+            reqEnd = min(requestedRange?.end ?? (totalLength - 1), totalLength - 1)
+        }
+
         guard reqStart <= reqEnd else {
-            let err = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(totalLength)\r\n\r\n"
+            let err = "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */\(totalLength)\r\nConnection: close\r\n\r\n"
             sendString(clientFd, err)
             return
         }
 
         let responseLength = reqEnd - reqStart + 1
-        let isPartial = requestedRange != nil
+        let isPartial = requestedRange != nil || requestedSuffix != nil
 
         let header = isPartial
             ? "HTTP/1.1 206 Partial Content\r\n" +
@@ -237,12 +259,12 @@ public final class LocalMediaProxyServer {
               "Content-Range: bytes \(reqStart)-\(reqEnd)/\(totalLength)\r\n" +
               "Content-Length: \(responseLength)\r\n" +
               "Accept-Ranges: bytes\r\n" +
-              "Connection: keep-alive\r\n\r\n"
+              "Connection: close\r\n\r\n"
             : "HTTP/1.1 200 OK\r\n" +
               "Content-Type: \(contentType)\r\n" +
               "Content-Length: \(totalLength)\r\n" +
               "Accept-Ranges: bytes\r\n" +
-              "Connection: keep-alive\r\n\r\n"
+              "Connection: close\r\n\r\n"
 
         guard sendString(clientFd, header) else { return }
         if parts[0] == "HEAD" { return }
@@ -337,7 +359,7 @@ public final class LocalMediaProxyServer {
         var writeOffset = start
         var clientAlive = true
 
-        // Custom delegate handling for streaming chunks
+        var streamingTask: URLSessionDataTask?
         let streamer = ChunkStreamer { chunk in
             guard clientAlive else { return false }
             if self.sendData(clientFd, chunk) {
@@ -352,6 +374,7 @@ public final class LocalMediaProxyServer {
                 return true
             } else {
                 clientAlive = false
+                streamingTask?.cancel()
                 return false
             }
         } onComplete: {
@@ -359,11 +382,16 @@ public final class LocalMediaProxyServer {
         }
 
         let customSession = URLSession(configuration: .ephemeral, delegate: streamer, delegateQueue: nil)
-        let streamingTask = customSession.dataTask(with: request)
-        streamingTask.resume()
+        let task = customSession.dataTask(with: request)
+        streamingTask = task
+        task.resume()
 
-        semaphore.wait()
+        let waitResult = semaphore.wait(timeout: .now() + 25.0)
+        if waitResult == .timedOut {
+            task.cancel()
+        }
         customSession.invalidateAndCancel()
+        storage.flushMetadata(for: cacheKey)
     }
 
     // MARK: - Preflight Probing
@@ -395,7 +423,11 @@ public final class LocalMediaProxyServer {
             }
         }
         task.resume()
-        semaphore.wait()
+
+        let waitResult = semaphore.wait(timeout: .now() + 8.0)
+        if waitResult == .timedOut {
+            task.cancel()
+        }
         return result
     }
 

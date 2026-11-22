@@ -691,6 +691,8 @@ struct VerticalPager: UIViewControllerRepresentable {
         var viewModel: FeedViewModel
         weak var controller: FeedCollectionViewController?
 
+        private var currentlyPinnedKeys: Set<String> = []
+
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
             self.viewModel = viewModel
@@ -915,12 +917,20 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
             MediaPreloadManager.shared.cancelAllExcept(retainedKeys: retainedKeys)
 
-            // Pin active & prewarm items in disk storage
-            MediaCacheStorage.shared.pin(key: "k_\(store.items[index].video.id)")
+            // Pin active & prewarm items in disk storage (unpinning previous items to prevent cache pin leak)
+            var newPinnedKeys: Set<String> = [MediaCacheKey.key(for: store.items[index].video.id)]
             if let prewarmId = store.prewarmStreamId,
                let prewarmItem = store.items.first(where: { $0.streamId == prewarmId }) {
-                MediaCacheStorage.shared.pin(key: "k_\(prewarmItem.video.id)")
+                newPinnedKeys.insert(MediaCacheKey.key(for: prewarmItem.video.id))
             }
+            let toUnpin = currentlyPinnedKeys.subtracting(newPinnedKeys)
+            for k in toUnpin {
+                MediaCacheStorage.shared.unpin(key: k)
+            }
+            for k in newPinnedKeys.subtracting(currentlyPinnedKeys) {
+                MediaCacheStorage.shared.pin(key: k)
+            }
+            currentlyPinnedKeys = newPinnedKeys
 
             store.appendNextIfNeeded(near: index)
             refreshVisibleCells()

@@ -17,7 +17,16 @@ final class MediaCacheTests: XCTestCase {
 
         // Both URLs point to the same underlying ByteDance TOS object; they MUST produce identical cache keys!
         XCTAssertEqual(key1, key2)
+        XCTAssertTrue(key1.hasPrefix("k_"))
         XCTAssertFalse(key1.isEmpty)
+    }
+
+    func testMediaCacheKeyUniformPrefix() {
+        let url = URL(string: "https://cdn.example.com/stream/segment.mp4?query=1")!
+        let key = MediaCacheKey.compute(url: url)
+        XCTAssertTrue(key.hasPrefix("k_"))
+        XCTAssertEqual(MediaCacheKey.key(for: "raw_id"), "k_raw_id")
+        XCTAssertEqual(MediaCacheKey.key(for: "k_already_prefixed"), "k_already_prefixed")
     }
 
     func testMediaCacheStorageWriteAndRead() {
@@ -64,6 +73,38 @@ final class MediaCacheTests: XCTestCase {
         XCTAssertNotNil(storage.metadata(for: pinnedKey))
         // Unpinned item should have been evicted to reduce usage below target watermark
         XCTAssertNil(storage.metadata(for: unpinnedKey))
+    }
+
+    func testMediaCacheStorageUnpinAllowsEviction() {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let storage = MediaCacheStorage(cacheDirectory: tempDir, maxDiskSize: 150, targetDiskSize: 50)
+        defer { storage.clearAll() }
+
+        let videoA = "video_a"
+        let videoB = "video_b"
+        let chunk = Data(repeating: 0x55, count: 100)
+
+        storage.writeData(for: videoA, data: chunk, offset: 0, contentLength: 100, contentType: "video/mp4")
+        storage.pin(key: videoA)
+        XCTAssertTrue(storage.isPinned(key: videoA))
+
+        // Multiple pins requirement
+        storage.pin(key: videoA)
+        storage.unpin(key: videoA)
+        XCTAssertTrue(storage.isPinned(key: videoA)) // Still 1 pin active!
+
+        storage.unpin(key: videoA)
+        XCTAssertFalse(storage.isPinned(key: videoA)) // Now completely unpinned!
+
+        // Exceed watermark
+        storage.writeData(for: videoB, data: chunk, offset: 0, contentLength: 100, contentType: "video/mp4")
+        storage.pin(key: videoB)
+
+        storage.evictIfNeeded()
+
+        // videoA was unpinned and should be evicted
+        XCTAssertNil(storage.metadata(for: videoA))
+        XCTAssertNotNil(storage.metadata(for: videoB))
     }
 
     func testImageDiskCacheStoreAndRead() {
