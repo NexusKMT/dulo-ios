@@ -10,13 +10,14 @@ struct FeedStreamItem: Identifiable {
 
 /// Mutable state shared between the vertical pager (UIKit) and the SwiftUI
 /// pages: the growing stream, which page is active, and scene phase.
-/// Pages observe this store, so UIKit-driven changes re-render SwiftUI.
+/// Performance Isolation: visibleStreamIds and prewarmStreamId are non-@Published
+/// to prevent 60Hz/120Hz scroll events from invalidating the SwiftUI view graph.
 @MainActor
 final class FeedStreamStore: ObservableObject {
     @Published private(set) var items: [FeedStreamItem] = []
     @Published var activeStreamId: Int64 = 0
-    @Published var prewarmStreamId: Int64? = nil
-    @Published var visibleStreamIds: Set<Int64> = []
+    var prewarmStreamId: Int64? = nil
+    var visibleStreamIds: Set<Int64> = []
     @Published var sceneActive = true
 
     private let queue: ShuffledVideoQueue<SystemRandomNumberGenerator>

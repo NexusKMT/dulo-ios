@@ -91,15 +91,16 @@ struct VerticalPager: UIViewControllerRepresentable {
                 lastReportedCount = itemCount
                 collectionView.reloadData()
                 coordinator?.preloadAhead(from: 0)
+            } else if itemCount > lastReportedCount {
+                let startIndex = lastReportedCount
+                lastReportedCount = itemCount
+                let indexPaths = (startIndex..<itemCount).map { IndexPath(item: $0, section: 0) }
+                collectionView.performBatchUpdates {
+                    collectionView.insertItems(at: indexPaths)
+                }
             } else if itemCount != lastReportedCount {
                 lastReportedCount = itemCount
-                // Defer reload until runloop is idle and scroll view is NOT actively dragging
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self, let cv = self.collectionView else { return }
-                    if !cv.isDragging && !cv.isDecelerating {
-                        cv.reloadData()
-                    }
-                }
+                collectionView.reloadData()
             }
         }
 
@@ -119,9 +120,9 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
             let velocity = self.panGestureRecognizer.velocity(in: self)
             // Mathematical Gesture Disambiguation:
-            // Intercepts touch ONLY when horizontal velocity strictly exceeds vertical velocity.
+            // Intercepts touch ONLY when horizontal velocity strictly exceeds vertical velocity by 1.2x.
             // Yields 100% to outer vertical feed when dragging vertically, with 0ms gesture delay.
-            return abs(velocity.x) > abs(velocity.y)
+            return abs(velocity.x) > (abs(velocity.y) * 1.2)
         }
     }
 
@@ -236,9 +237,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         let singleCoverImageView = UIImageView()
         let singlePlayerView = PlayerLayerContainer()
 
-        // Gallery mode views
-        private var horizontalLayout: UICollectionViewFlowLayout!
-        private var horizontalCollectionView: HorizontalPagingCollectionView!
+        // Gallery mode views (lazily created on demand for image gallery posts)
+        private var horizontalLayout: UICollectionViewFlowLayout?
+        private var horizontalCollectionView: HorizontalPagingCollectionView?
 
         // Data & State
         private enum CellMode {
@@ -292,28 +293,38 @@ struct VerticalPager: UIViewControllerRepresentable {
             singlePlayerView.alpha = 0.0
             singlePlayerView.clipsToBounds = false
             contentView.addSubview(singlePlayerView)
+        }
 
-            // 2. Horizontal gallery setup
-            horizontalLayout = UICollectionViewFlowLayout()
-            horizontalLayout.scrollDirection = .horizontal
-            horizontalLayout.minimumLineSpacing = 0
-            horizontalLayout.minimumInteritemSpacing = 0
+        @discardableResult
+        private func ensureGalleryViews() -> (UICollectionViewFlowLayout, HorizontalPagingCollectionView) {
+            if let layout = horizontalLayout, let cv = horizontalCollectionView {
+                return (layout, cv)
+            }
+            let layout = UICollectionViewFlowLayout()
+            layout.scrollDirection = .horizontal
+            layout.minimumLineSpacing = 0
+            layout.minimumInteritemSpacing = 0
+            layout.itemSize = contentView.bounds.size
 
-            horizontalCollectionView = HorizontalPagingCollectionView(frame: bounds, collectionViewLayout: horizontalLayout)
-            horizontalCollectionView.backgroundColor = .black
-            horizontalCollectionView.isPagingEnabled = true
-            horizontalCollectionView.showsHorizontalScrollIndicator = false
-            horizontalCollectionView.contentInsetAdjustmentBehavior = .never
-            horizontalCollectionView.bounces = true
-            horizontalCollectionView.delaysContentTouches = false
-            horizontalCollectionView.canCancelContentTouches = true
-            horizontalCollectionView.isDirectionalLockEnabled = true
-            horizontalCollectionView.dataSource = self
-            horizontalCollectionView.delegate = self
-            horizontalCollectionView.prefetchDataSource = self
-            horizontalCollectionView.register(GallerySlideCell.self, forCellWithReuseIdentifier: GallerySlideCell.reuseId)
-            horizontalCollectionView.isHidden = true
-            contentView.addSubview(horizontalCollectionView)
+            let cv = HorizontalPagingCollectionView(frame: contentView.bounds, collectionViewLayout: layout)
+            cv.backgroundColor = .black
+            cv.isPagingEnabled = true
+            cv.showsHorizontalScrollIndicator = false
+            cv.contentInsetAdjustmentBehavior = .never
+            cv.bounces = true
+            cv.delaysContentTouches = false
+            cv.canCancelContentTouches = true
+            cv.isDirectionalLockEnabled = true
+            cv.dataSource = self
+            cv.delegate = self
+            cv.prefetchDataSource = self
+            cv.register(GallerySlideCell.self, forCellWithReuseIdentifier: GallerySlideCell.reuseId)
+            cv.isHidden = true
+            contentView.addSubview(cv)
+
+            self.horizontalLayout = layout
+            self.horizontalCollectionView = cv
+            return (layout, cv)
         }
 
         override func layoutSubviews() {
@@ -322,10 +333,12 @@ struct VerticalPager: UIViewControllerRepresentable {
             CATransaction.setDisableActions(true)
             singleCoverImageView.frame = contentView.bounds
             singlePlayerView.frame = contentView.bounds
-            horizontalCollectionView.frame = contentView.bounds
-            if horizontalLayout.itemSize != contentView.bounds.size {
-                horizontalLayout.itemSize = contentView.bounds.size
-                horizontalLayout.invalidateLayout()
+            if let cv = horizontalCollectionView, let layout = horizontalLayout {
+                cv.frame = contentView.bounds
+                if layout.itemSize != contentView.bounds.size {
+                    layout.itemSize = contentView.bounds.size
+                    layout.invalidateLayout()
+                }
             }
             CATransaction.commit()
         }
@@ -355,7 +368,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentSlideIndex = 0
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            horizontalCollectionView.isHidden = true
+            horizontalCollectionView?.isHidden = true
             singleCoverImageView.isHidden = false
             singlePlayerView.isHidden = false
             CATransaction.commit()
@@ -432,10 +445,10 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.resolvedPlayUrl = playUrl
                     self.currentBgmUrl = nil
 
-                    self.horizontalCollectionView.isHidden = true
+                    self.horizontalCollectionView?.isHidden = true
                     self.singleCoverImageView.isHidden = false
                     self.singlePlayerView.isHidden = false
-                    self.horizontalCollectionView.reloadData()
+                    self.horizontalCollectionView?.reloadData()
 
                     if let coverStr, let coverUrl = URL(string: coverStr), self.singleCoverImageView.image == nil {
                         if let cached = ImagePipeline.shared.cachedImage(for: coverUrl) {
@@ -455,9 +468,10 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.resolvedPlayUrl = nil
                     self.currentBgmUrl = music
 
+                    let (_, galleryCv) = self.ensureGalleryViews()
                     self.singleCoverImageView.isHidden = true
                     self.singlePlayerView.isHidden = true
-                    self.horizontalCollectionView.isHidden = false
+                    galleryCv.isHidden = false
 
                     // Pin sliding window [0, 1, 2] in RAM
                     ImagePipeline.shared.pin(urls: Array(self.currentSlideUrls.prefix(3)))
@@ -466,9 +480,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.currentSlideIndex = 0
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
-                    self.horizontalCollectionView.reloadData()
-                    self.horizontalCollectionView.setContentOffset(.zero, animated: false)
-                    self.horizontalCollectionView.layoutIfNeeded()
+                    galleryCv.reloadData()
+                    galleryCv.setContentOffset(.zero, animated: false)
+                    galleryCv.layoutIfNeeded()
                     CATransaction.commit()
                     self.isReconfiguring = false
 
@@ -538,7 +552,8 @@ struct VerticalPager: UIViewControllerRepresentable {
                         }
                     } else {
                         motionDebounceTask?.cancel()
-                        if let cell = horizontalCollectionView.cellForItem(at: IndexPath(item: currentSlideIndex, section: 0)) as? GallerySlideCell {
+                        if let cv = horizontalCollectionView,
+                           let cell = cv.cellForItem(at: IndexPath(item: currentSlideIndex, section: 0)) as? GallerySlideCell {
                             cell.detachMotion()
                         }
                     }
@@ -557,7 +572,8 @@ struct VerticalPager: UIViewControllerRepresentable {
             let slide = currentSlides[index]
             guard let motionUrl = slide.motionVideoUrl else {
                 // Slide is pure image: free hardware video decoder immediately!
-                if let cell = horizontalCollectionView.cellForItem(at: IndexPath(item: index, section: 0)) as? GallerySlideCell {
+                if let cv = horizontalCollectionView,
+                   let cell = cv.cellForItem(at: IndexPath(item: index, section: 0)) as? GallerySlideCell {
                     cell.detachMotion()
                 }
                 FeedPlayerPool.shared.activeSlot.clear()
@@ -570,8 +586,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                 guard let self, !Task.isCancelled, self.currentSlideIndex == index else { return }
                 guard index >= 0, index < self.currentSlides.count else { return }
 
+                guard let cv = self.horizontalCollectionView else { return }
                 let indexPath = IndexPath(item: index, section: 0)
-                guard let cell = self.horizontalCollectionView.cellForItem(at: indexPath) as? GallerySlideCell else { return }
+                guard let cell = cv.cellForItem(at: indexPath) as? GallerySlideCell else { return }
 
                 let slot = FeedPlayerPool.shared.acquireSlot(
                     for: self.currentItem?.streamId ?? 0,
@@ -696,6 +713,13 @@ struct VerticalPager: UIViewControllerRepresentable {
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
             self.viewModel = viewModel
+        }
+
+        deinit {
+            for k in currentlyPinnedKeys {
+                MediaCacheStorage.shared.unpin(key: k)
+            }
+            currentlyPinnedKeys.removeAll()
         }
 
         func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -841,29 +865,26 @@ struct VerticalPager: UIViewControllerRepresentable {
 
             let velocityY = abs(velocity.y)
             let targetItem = store.items[targetIndex]
-            if store.activeStreamId != targetItem.streamId {
-                store.activeStreamId = targetItem.streamId
-                let videoId = targetItem.video.id
-                let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
-                AVTelemetryTracker.shared.recordSwipeTrigger(
-                    for: videoId,
-                    cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
-                    isCacheHit: isCached
-                )
-                let nextPrewarmIndex = velocity.y < 0 ? targetIndex - 1 : targetIndex + 1
-                if nextPrewarmIndex >= 0 && nextPrewarmIndex < store.items.count {
-                    store.prewarmStreamId = store.items[nextPrewarmIndex].streamId
-                }
-                refreshVisibleCells()
+            let videoId = targetItem.video.id
+            let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
+            AVTelemetryTracker.shared.recordSwipeTrigger(
+                for: videoId,
+                cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
+                isCacheHit: isCached
+            )
+            let nextPrewarmIndex = velocity.y < 0 ? targetIndex - 1 : targetIndex + 1
+            if nextPrewarmIndex >= 0 && nextPrewarmIndex < store.items.count {
+                store.prewarmStreamId = store.items[nextPrewarmIndex].streamId
+            }
+            refreshVisibleCells()
 
-                // Velocity Gating (Doom-Scrolling Protection):
-                // If user is flicking rapidly past multiple videos, cancel stale preloads and do NOT waste video chunk bandwidth!
-                if velocityY > 2.5 {
-                    let retained: Set<String> = [targetItem.video.id]
-                    MediaPreloadManager.shared.cancelAllExcept(retainedKeys: retained)
-                } else {
-                    preloadAhead(from: targetIndex)
-                }
+            // Velocity Gating (Doom-Scrolling Protection):
+            // If user is flicking rapidly past multiple videos, cancel stale preloads and do NOT waste video chunk bandwidth!
+            if velocityY > 2.5 {
+                let retained: Set<String> = [targetItem.video.id]
+                MediaPreloadManager.shared.cancelAllExcept(retainedKeys: retained)
+            } else {
+                preloadAhead(from: targetIndex)
             }
         }
 
