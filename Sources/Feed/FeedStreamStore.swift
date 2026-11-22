@@ -18,7 +18,6 @@ final class FeedStreamStore: ObservableObject {
     @Published var activeStreamId: Int64 = 0
     var prewarmStreamId: Int64? = nil
     var visibleStreamIds: Set<Int64> = []
-    @Published var sceneActive = true
 
     private let queue: ShuffledVideoQueue<SystemRandomNumberGenerator>
     private var nextStreamId: Int64 = 0

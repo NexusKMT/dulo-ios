@@ -31,7 +31,6 @@ struct FeedScreen: View {
             }
         }
         .onChange(of: scenePhase) { phase in
-            store?.sceneActive = (phase == .active)
             updateIdleTimer(phase: phase)
         }
         .onChange(of: viewModel.videos.isEmpty) { _ in
