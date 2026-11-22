@@ -121,6 +121,11 @@ public final class LocalMediaProxyServer {
 
             guard clientFd >= 0 else {
                 if !isRunning { break }
+                let err = errno
+                if err == EBADF || err == EINVAL || err == ENOTSOCK {
+                    break
+                }
+                usleep(10000)
                 continue
             }
 
@@ -319,7 +324,7 @@ public final class LocalMediaProxyServer {
             // Fallback for any remaining unstreamed cached bytes
             while currentOffset <= diskEnd {
                 let toRead = Int(min(Int64(blockSize), diskEnd - currentOffset + 1))
-                guard let chunk = storage.readData(for: cacheKey, offset: currentOffset, length: toRead) else {
+                guard let chunk = storage.readData(for: cacheKey, offset: currentOffset, length: toRead), !chunk.isEmpty else {
                     break
                 }
                 guard sendData(clientFd, chunk) else { return } // Client disconnected
@@ -459,22 +464,34 @@ public final class LocalMediaProxyServer {
             guard let ptr = rawPtr.baseAddress else { return true }
             var totalSent = 0
             let length = data.count
+            var pollRetries = 0
 
             while totalSent < length {
                 let sent = send(fd, ptr.advanced(by: totalSent), length - totalSent, 0)
                 if sent > 0 {
                     totalSent += sent
+                    pollRetries = 0
                 } else if sent == 0 {
                     return false
                 } else {
                     let err = errno
                     if err == EAGAIN || err == EWOULDBLOCK {
+                        pollRetries += 1
+                        if pollRetries > 60 { // Saturated or disconnected client timeout
+                            return false
+                        }
                         // Socket send buffer is full (AVPlayer paused reading or buffer saturated).
                         // Poll with POLLOUT for up to 1000ms.
                         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
                         let pollRes = poll(&pfd, 1, 1000)
-                        if pollRes > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
-                            continue // Socket is writable again!
+                        if pollRes > 0 {
+                            if (pfd.revents & Int16(POLLHUP | POLLERR | POLLNVAL)) != 0 {
+                                return false // Client hung up, broken pipe or socket error
+                            }
+                            if (pfd.revents & Int16(POLLOUT)) != 0 {
+                                usleep(1000) // 1ms sleep prevents zero-sleep spin if socket immediately reports writable
+                                continue // Socket is writable again!
+                            }
                         } else if pollRes == 0 {
                             // 1 second poll timed out, retry loop while checking socket health
                             continue

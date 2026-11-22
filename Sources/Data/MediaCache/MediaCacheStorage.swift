@@ -212,6 +212,7 @@ public final class MediaCacheStorage {
         do {
             try fileHandle.seek(toOffset: UInt64(offset))
             let chunk = fileHandle.readData(ofLength: available)
+            guard !chunk.isEmpty else { return nil }
             metadataMemoryCache[k]?.lastAccessTime = Date().timeIntervalSince1970
             return chunk
         } catch {

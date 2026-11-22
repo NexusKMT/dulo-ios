@@ -73,12 +73,16 @@ public final class FeedPlayerPool {
             setMuted(effectiveMuted)
 
             if currentStreamId == streamId && currentPlayUrl == playUrl && player.currentItem != nil {
-                if autoplay {
-                    player.play()
+                if player.currentItem?.status == .failed || player.error != nil {
+                    // Item failed (e.g. proxy severed during lock screen); fall through to recreate
                 } else {
-                    player.pause()
+                    if autoplay {
+                        player.play()
+                    } else {
+                        player.pause()
+                    }
+                    return
                 }
-                return
             }
 
             clear()

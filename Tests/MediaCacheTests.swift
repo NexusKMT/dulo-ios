@@ -171,4 +171,23 @@ final class MediaCacheTests: XCTestCase {
         let boundary = MediaPreloadManager.parseMoovBoundary(in: header)
         XCTAssertNil(boundary)
     }
+
+    func testMediaCacheStorageReadDataPastPhysicalLengthReturnsNil() {
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(UUID().uuidString)
+        let storage = MediaCacheStorage(cacheDirectory: tempDir, maxDiskSize: 10 * 1024 * 1024, targetDiskSize: 5 * 1024 * 1024)
+        defer { storage.clearAll() }
+
+        let testKey = "test_item_truncated"
+        let testData = Data("SmallData".utf8) // 9 bytes
+        storage.writeData(for: testKey, data: testData, offset: 0, contentLength: 1000, contentType: "video/mp4")
+
+        // Reading within cached bytes succeeds
+        let validChunk = storage.readData(for: testKey, offset: 0, length: 5)
+        XCTAssertNotNil(validChunk)
+        XCTAssertEqual(validChunk?.count, 5)
+
+        // Reading past cached bytes MUST return nil, never empty Data()
+        let pastChunk = storage.readData(for: testKey, offset: 9, length: 10)
+        XCTAssertNil(pastChunk)
+    }
 }

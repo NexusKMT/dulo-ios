@@ -34,7 +34,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         context.coordinator.store = store
         context.coordinator.viewModel = viewModel
         controller.update(itemCount: store.items.count)
-        if !store.sceneActive {
+        if store.sceneActive {
+            context.coordinator.resumePlayback()
+        } else {
             FeedPlayerPool.shared.pauseAll()
         }
     }
@@ -536,14 +538,18 @@ struct VerticalPager: UIViewControllerRepresentable {
 
             case .gallery:
                 if isActive {
-                    // Play independent BGM
-                    if let bgm = currentBgmUrl {
-                        FeedPlayerPool.shared.playBgm(urlString: bgm)
+                    if store.sceneActive {
+                        // Play independent BGM
+                        if let bgm = currentBgmUrl {
+                            FeedPlayerPool.shared.playBgm(urlString: bgm)
+                        } else {
+                            FeedPlayerPool.shared.bgmPlayer.stop()
+                        }
+                        // Schedule active Live Photo on current slide
+                        scheduleMotionPlay(at: currentSlideIndex)
                     } else {
-                        FeedPlayerPool.shared.bgmPlayer.stop()
+                        FeedPlayerPool.shared.pauseAll()
                     }
-                    // Schedule active Live Photo on current slide
-                    scheduleMotionPlay(at: currentSlideIndex)
                 } else {
                     if isPrewarm {
                         // Prewarm gallery: warm up slide 0 in RAM
@@ -709,17 +715,59 @@ struct VerticalPager: UIViewControllerRepresentable {
         weak var controller: FeedCollectionViewController?
 
         private var currentlyPinnedKeys: Set<String> = []
+        private var foregroundObserver: NSObjectProtocol?
+        private var backgroundObserver: NSObjectProtocol?
 
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
             self.viewModel = viewModel
+            super.init()
+
+            foregroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                #if canImport(AVFAudio)
+                PlayerFactory.configureAudioSession()
+                #endif
+                self.store.sceneActive = true
+                self.resumePlayback()
+            }
+
+            backgroundObserver = NotificationCenter.default.addObserver(
+                forName: UIApplication.willResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.store.sceneActive = false
+                FeedPlayerPool.shared.pauseAll()
+            }
         }
 
         deinit {
+            if let foregroundObserver {
+                NotificationCenter.default.removeObserver(foregroundObserver)
+            }
+            if let backgroundObserver {
+                NotificationCenter.default.removeObserver(backgroundObserver)
+            }
             for k in currentlyPinnedKeys {
                 MediaCacheStorage.shared.unpin(key: k)
             }
             currentlyPinnedKeys.removeAll()
+        }
+
+        func resumePlayback() {
+            guard store.sceneActive else { return }
+            guard let activeId = store.activeStreamId,
+                  let activeCell = controller?.collectionView.visibleCells.compactMap({ $0 as? FeedVideoCell }).first(where: { $0.currentItem?.streamId == activeId }) else {
+                refreshVisibleCells()
+                return
+            }
+            activeCell.refreshPlayback(store: store)
         }
 
         func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
