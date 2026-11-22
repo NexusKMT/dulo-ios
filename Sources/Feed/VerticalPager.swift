@@ -85,8 +85,6 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
         }
 
-        private var pendingInsertCount: Int? = nil
-
         func update(itemCount: Int) {
             guard let collectionView else { return }
             if lastReportedCount == 0 {
@@ -94,27 +92,11 @@ struct VerticalPager: UIViewControllerRepresentable {
                 collectionView.reloadData()
                 coordinator?.preloadAhead(from: 0)
             } else if itemCount > lastReportedCount {
-                if collectionView.isDragging || collectionView.isDecelerating {
-                    pendingInsertCount = itemCount
-                } else {
-                    let start = lastReportedCount
-                    lastReportedCount = itemCount
-                    let newIndexPaths = (start..<itemCount).map { IndexPath(item: $0, section: 0) }
-                    collectionView.insertItems(at: newIndexPaths)
-                }
+                let start = lastReportedCount
+                lastReportedCount = itemCount
+                let newIndexPaths = (start..<itemCount).map { IndexPath(item: $0, section: 0) }
+                collectionView.insertItems(at: newIndexPaths)
             }
-        }
-
-        func flushPendingInsertions() {
-            guard let target = pendingInsertCount, target > lastReportedCount, let collectionView else {
-                pendingInsertCount = nil
-                return
-            }
-            pendingInsertCount = nil
-            let start = lastReportedCount
-            lastReportedCount = target
-            let newIndexPaths = (start..<target).map { IndexPath(item: $0, section: 0) }
-            collectionView.insertItems(at: newIndexPaths)
         }
 
         func scrollTo(index: Int, animated: Bool) {
@@ -340,15 +322,6 @@ struct VerticalPager: UIViewControllerRepresentable {
             if horizontalLayout.itemSize != contentView.bounds.size {
                 horizontalLayout.itemSize = contentView.bounds.size
                 horizontalLayout.invalidateLayout()
-            }
-            switch cellMode {
-            case .video:
-                contentView.bringSubviewToFront(singleCoverImageView)
-                contentView.bringSubviewToFront(singlePlayerView)
-            case .gallery:
-                contentView.bringSubviewToFront(horizontalCollectionView)
-            case .unconfigured:
-                break
             }
             CATransaction.commit()
         }
@@ -695,7 +668,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-            store.items.count
+            controller?.lastReportedCount ?? store.items.count
         }
 
         func collectionView(_ collectionView: UICollectionView,
@@ -835,7 +808,6 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
-                controller?.flushPendingInsertions()
                 confirmSettledPage(scrollView)
             }
         }
@@ -848,12 +820,10 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-            controller?.flushPendingInsertions()
             confirmSettledPage(scrollView)
         }
 
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
-            controller?.flushPendingInsertions()
             confirmSettledPage(scrollView)
         }
 
