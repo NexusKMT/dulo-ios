@@ -85,6 +85,8 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
         }
 
+        private var pendingInsertCount: Int? = nil
+
         func update(itemCount: Int) {
             guard let collectionView else { return }
             if lastReportedCount == 0 {
@@ -92,11 +94,27 @@ struct VerticalPager: UIViewControllerRepresentable {
                 collectionView.reloadData()
                 coordinator?.preloadAhead(from: 0)
             } else if itemCount > lastReportedCount {
-                let start = lastReportedCount
-                lastReportedCount = itemCount
-                let newIndexPaths = (start..<itemCount).map { IndexPath(item: $0, section: 0) }
-                collectionView.insertItems(at: newIndexPaths)
+                if collectionView.isDragging || collectionView.isDecelerating {
+                    pendingInsertCount = itemCount
+                } else {
+                    let start = lastReportedCount
+                    lastReportedCount = itemCount
+                    let newIndexPaths = (start..<itemCount).map { IndexPath(item: $0, section: 0) }
+                    collectionView.insertItems(at: newIndexPaths)
+                }
             }
+        }
+
+        func flushPendingInsertions() {
+            guard let target = pendingInsertCount, target > lastReportedCount, let collectionView else {
+                pendingInsertCount = nil
+                return
+            }
+            pendingInsertCount = nil
+            let start = lastReportedCount
+            lastReportedCount = target
+            let newIndexPaths = (start..<target).map { IndexPath(item: $0, section: 0) }
+            collectionView.insertItems(at: newIndexPaths)
         }
 
         func scrollTo(index: Int, animated: Bool) {
@@ -127,10 +145,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         static let reuseId = "GallerySlideCell"
 
         let coverImageView = UIImageView()
-        let motionContainerView = UIView()
+        let motionPlayerView = PlayerLayerContainer()
         private var currentUrl: URL?
         private var imageLoadTask: Task<Void, Never>?
-        private weak var attachedSlot: FeedPlayerPool.PlayerSlot?
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -153,10 +170,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             coverImageView.clipsToBounds = false
             contentView.addSubview(coverImageView)
 
-            motionContainerView.backgroundColor = .clear
-            motionContainerView.clipsToBounds = false
-            motionContainerView.alpha = 0.0
-            contentView.addSubview(motionContainerView)
+            motionPlayerView.backgroundColor = .clear
+            motionPlayerView.clipsToBounds = false
+            motionPlayerView.alpha = 0.0
+            contentView.addSubview(motionPlayerView)
         }
 
         override func layoutSubviews() {
@@ -164,10 +181,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             coverImageView.frame = contentView.bounds
-            motionContainerView.frame = contentView.bounds
-            if let slot = attachedSlot {
-                slot.playerLayer.frame = motionContainerView.bounds
-            }
+            motionPlayerView.frame = contentView.bounds
             CATransaction.commit()
         }
 
@@ -181,39 +195,22 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func detachMotion() {
-            if let slot = attachedSlot {
-                if slot.playerLayer.superlayer == motionContainerView.layer {
-                    CATransaction.begin()
-                    CATransaction.setDisableActions(true)
-                    slot.playerLayer.removeFromSuperlayer()
-                    CATransaction.commit()
-                }
-                slot.onReadyForDisplay = nil
-                attachedSlot = nil
-            }
-            motionContainerView.alpha = 0.0
+            motionPlayerView.playerLayer.player = nil
+            motionPlayerView.alpha = 0.0
+            motionPlayerView.onReadyForDisplay = nil
         }
 
         func attachMotion(slot: FeedPlayerPool.PlayerSlot) {
-            if attachedSlot === slot && slot.playerLayer.superlayer == motionContainerView.layer {
-                if slot.isReadyForDisplay { motionContainerView.alpha = 1.0 }
-                return
-            }
-            detachMotion()
-            attachedSlot = slot
-
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            slot.playerLayer.frame = motionContainerView.bounds
-            motionContainerView.layer.addSublayer(slot.playerLayer)
-            CATransaction.commit()
-
-            // Always start transparent to keep key photo visible until the live video frame decodes
-            motionContainerView.alpha = 0.0
-            slot.onReadyForDisplay = { [weak self] in
-                guard let self else { return }
-                UIView.animate(withDuration: 0.15, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
-                    self.motionContainerView.alpha = 1.0
+            motionPlayerView.playerLayer.player = slot.player
+            if motionPlayerView.playerLayer.isReadyForDisplay {
+                motionPlayerView.alpha = 1.0
+            } else {
+                motionPlayerView.alpha = 0.0
+                motionPlayerView.onReadyForDisplay = { [weak self] in
+                    guard let self else { return }
+                    UIView.animate(withDuration: 0.15, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
+                        self.motionPlayerView.alpha = 1.0
+                    }
                 }
             }
         }
@@ -245,7 +242,7 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         // Single video mode views
         let singleCoverImageView = UIImageView()
-        let singlePlayerContainerView = UIView()
+        let singlePlayerView = PlayerLayerContainer()
 
         // Gallery mode views
         private var horizontalLayout: UICollectionViewFlowLayout!
@@ -292,12 +289,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             singleCoverImageView.clipsToBounds = false
             contentView.addSubview(singleCoverImageView)
 
-            singlePlayerContainerView.backgroundColor = .clear
-            singlePlayerContainerView.isOpaque = false
-            singlePlayerContainerView.clipsToBounds = false
-            singlePlayerContainerView.layer.masksToBounds = false
-            singlePlayerContainerView.alpha = 0.0
-            contentView.addSubview(singlePlayerContainerView)
+            singlePlayerView.backgroundColor = .clear
+            singlePlayerView.alpha = 0.0
+            singlePlayerView.clipsToBounds = false
+            contentView.addSubview(singlePlayerView)
 
             // 2. Horizontal gallery setup
             horizontalLayout = UICollectionViewFlowLayout()
@@ -327,14 +322,11 @@ struct VerticalPager: UIViewControllerRepresentable {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             singleCoverImageView.frame = contentView.bounds
-            singlePlayerContainerView.frame = contentView.bounds
+            singlePlayerView.frame = contentView.bounds
             horizontalCollectionView.frame = contentView.bounds
             if horizontalLayout.itemSize != contentView.bounds.size {
                 horizontalLayout.itemSize = contentView.bounds.size
                 horizontalLayout.invalidateLayout()
-            }
-            if let slot = attachedSlot {
-                slot.playerLayer.frame = singlePlayerContainerView.bounds
             }
             CATransaction.commit()
         }
@@ -356,58 +348,42 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentItem = nil
             resolvedPlayUrl = nil
             currentBgmUrl = nil
-            singlePlayerContainerView.alpha = 0.0
-            currentSlides.removeAll()
 
-            // Safe reset without redundant nested collection view layout cycles
+            // CRITICAL: DO NOT call currentSlides.removeAll() or horizontalCollectionView.reloadData() here!
+            // horizontalCollectionView is simply hidden. Its data count matches UIKit layout cache, preventing NSInternalInconsistencyException!
             isReconfiguring = true
             currentSlideIndex = 0
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             horizontalCollectionView.isHidden = true
             singleCoverImageView.isHidden = false
-            singlePlayerContainerView.isHidden = false
+            singlePlayerView.isHidden = false
             CATransaction.commit()
             isReconfiguring = false
         }
 
         func detachPlayer() {
-            if let slot = attachedSlot {
-                if slot.playerLayer.superlayer == singlePlayerContainerView.layer {
-                    CATransaction.begin()
-                    CATransaction.setDisableActions(true)
-                    slot.playerLayer.removeFromSuperlayer()
-                    CATransaction.commit()
-                }
-                slot.onReadyForDisplay = nil
-                attachedSlot = nil
-            }
-            singlePlayerContainerView.alpha = 0.0
+            attachedSlot = nil
+            singlePlayerView.playerLayer.player = nil
+            singlePlayerView.alpha = 0.0
+            singlePlayerView.onReadyForDisplay = nil
         }
 
         func attach(slot: FeedPlayerPool.PlayerSlot) {
-            guard singlePlayerContainerView.isHidden == false else { return }
-            if attachedSlot === slot && slot.playerLayer.superlayer == singlePlayerContainerView.layer {
-                if slot.isReadyForDisplay { singlePlayerContainerView.alpha = 1.0 }
-                return
-            }
-            detachPlayer()
+            guard singlePlayerView.isHidden == false else { return }
             attachedSlot = slot
-
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            slot.playerLayer.frame = singlePlayerContainerView.bounds
-            singlePlayerContainerView.layer.addSublayer(slot.playerLayer)
-            CATransaction.commit()
-
-            if slot.isReadyForDisplay {
-                singlePlayerContainerView.alpha = 1.0
+            singlePlayerView.playerLayer.player = slot.player
+            if singlePlayerView.playerLayer.isReadyForDisplay {
+                singlePlayerView.alpha = 1.0
             } else {
-                singlePlayerContainerView.alpha = 0.0
-                slot.onReadyForDisplay = { [weak self] in
+                singlePlayerView.alpha = 0.0
+                singlePlayerView.onReadyForDisplay = { [weak self] in
                     guard let self else { return }
+                    if let vid = self.currentItem?.video.id {
+                        AVTelemetryTracker.shared.recordReadyForDisplay(for: vid)
+                    }
                     UIView.animate(withDuration: 0.12, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
-                        self.singlePlayerContainerView.alpha = 1.0
+                        self.singlePlayerView.alpha = 1.0
                     }
                 }
             }
@@ -446,7 +422,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 case .video(let playUrl, let coverStr, let w, let h):
                     self.horizontalCollectionView.isHidden = true
                     self.singleCoverImageView.isHidden = false
-                    self.singlePlayerContainerView.isHidden = false
+                    self.singlePlayerView.isHidden = false
                     self.resolvedPlayUrl = playUrl
                     self.currentBgmUrl = nil
 
@@ -462,7 +438,7 @@ struct VerticalPager: UIViewControllerRepresentable {
 
                 case .images(let urls, let music, let slides):
                     self.singleCoverImageView.isHidden = true
-                    self.singlePlayerContainerView.isHidden = true
+                    self.singlePlayerView.isHidden = true
                     self.horizontalCollectionView.isHidden = false
                     self.resolvedPlayUrl = nil
                     self.currentBgmUrl = music
@@ -821,6 +797,7 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
+                controller?.flushPendingInsertions()
                 confirmSettledPage(scrollView)
             }
         }
@@ -833,10 +810,12 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            controller?.flushPendingInsertions()
             confirmSettledPage(scrollView)
         }
 
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+            controller?.flushPendingInsertions()
             confirmSettledPage(scrollView)
         }
 

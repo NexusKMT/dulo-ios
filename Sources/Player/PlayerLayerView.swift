@@ -94,53 +94,63 @@ struct PlayerLayerView: UIViewRepresentable {
         view.alpha = 0.0
         CATransaction.commit()
     }
+}
 
-    final class PlayerLayerContainer: UIView {
-        override class var layerClass: AnyClass { AVPlayerLayer.self }
-        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+public final class PlayerLayerContainer: UIView {
+    override public class var layerClass: AnyClass { AVPlayerLayer.self }
+    public var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    public var onReadyForDisplay: (() -> Void)?
+    private var readyObserver: NSKeyValueObservation?
 
-        override init(frame: CGRect) {
-            super.init(frame: frame)
-            setupLayer()
+    override public init(frame: CGRect) {
+        super.init(frame: frame)
+        setupLayer()
+    }
+
+    required public init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupLayer()
+    }
+
+    private func setupLayer() {
+        backgroundColor = .black
+        isOpaque = true
+        layer.isOpaque = true
+        layer.backgroundColor = UIColor.black.cgColor
+        layer.masksToBounds = false
+        // Strip out implicit CALayer animations to prevent 250ms stretch or morph bugs
+        playerLayer.actions = [
+            "contents": NSNull(),
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "opacity": NSNull(),
+            "sublayers": NSNull()
+        ]
+
+        readyObserver = playerLayer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
+            if layer.isReadyForDisplay {
+                Task { @MainActor [weak self] in
+                    self?.onReadyForDisplay?()
+                }
+            }
         }
+    }
 
-        required init?(coder: NSCoder) {
-            super.init(coder: coder)
-            setupLayer()
-        }
+    override public func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
+    }
 
-        private func setupLayer() {
-            backgroundColor = .black
-            isOpaque = true
-            layer.isOpaque = true
-            layer.backgroundColor = UIColor.black.cgColor
-            layer.masksToBounds = false
-            // Strip out implicit CALayer animations to prevent 250ms stretch or morph bugs
-            playerLayer.actions = [
-                "contents": NSNull(),
-                "bounds": NSNull(),
-                "position": NSNull(),
-                "opacity": NSNull(),
-                "sublayers": NSNull()
-            ]
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
+    override public func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             playerLayer.frame = bounds
             CATransaction.commit()
-        }
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            if window != nil {
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                playerLayer.frame = bounds
-                CATransaction.commit()
-            }
         }
     }
 }

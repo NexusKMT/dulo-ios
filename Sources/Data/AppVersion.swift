@@ -12,7 +12,7 @@ public enum AppVersion {
     }()
 
     public static let buildNumber: String = {
-        (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "15"
+        (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "16"
     }()
 
     public static var displayString: String {

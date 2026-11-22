@@ -25,22 +25,15 @@ public final class FeedPlayerPool {
     public final class PlayerSlot {
         public let slotIndex: Int
         public let player = AVPlayer()
-        #if canImport(UIKit)
-        public let playerLayer: AVPlayerLayer
-        #endif
         private var endObserver: NSObjectProtocol?
-        private var readyObserver: NSKeyValueObservation?
 
         public private(set) var currentStreamId: Int64?
         public private(set) var currentVideoId: String?
         public private(set) var currentPlayUrl: String?
-        public private(set) var isReadyForDisplay = false
-        public var onReadyForDisplay: (() -> Void)?
 
         private var openavtInstrument: OAVTInstrument?
         private var openavtTrackerId: Int?
         private var hasRegisteredDecoder = false
-        private var hasFiredReadyForDisplay = false
 
         public func setMuted(_ muted: Bool) {
             player.isMuted = muted
@@ -52,21 +45,6 @@ public final class FeedPlayerPool {
             player.automaticallyWaitsToMinimizeStalling = false
             player.preventsDisplaySleepDuringVideoPlayback = true
             player.actionAtItemEnd = .none
-
-            #if canImport(UIKit)
-            let layer = AVPlayerLayer(player: player)
-            layer.videoGravity = .resizeAspect
-            layer.backgroundColor = UIColor.black.cgColor
-            layer.isOpaque = true
-            layer.actions = [
-                "contents": NSNull(),
-                "bounds": NSNull(),
-                "position": NSNull(),
-                "opacity": NSNull(),
-                "sublayers": NSNull()
-            ]
-            self.playerLayer = layer
-            #endif
 
             // Gapless single-item loop: keeps the existing VTDecompressionSession alive across loops
             endObserver = NotificationCenter.default.addObserver(
@@ -86,22 +64,6 @@ public final class FeedPlayerPool {
             let tracker = OAVTTrackerAVPlayer(player: player)
             self.openavtTrackerId = instrument.addTracker(tracker)
             self.openavtInstrument = instrument
-
-            #if canImport(UIKit)
-            self.readyObserver = layer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
-                if layer.isReadyForDisplay {
-                    Task { @MainActor in
-                        guard let self, !self.hasFiredReadyForDisplay else { return }
-                        self.hasFiredReadyForDisplay = true
-                        self.isReadyForDisplay = true
-                        if let vid = self.currentVideoId {
-                            AVTelemetryTracker.shared.recordReadyForDisplay(for: vid)
-                        }
-                        self.onReadyForDisplay?()
-                    }
-                }
-            }
-            #endif
         }
 
         public func prepare(
@@ -113,15 +75,6 @@ public final class FeedPlayerPool {
             videoGravity: AVLayerVideoGravity = .resizeAspect,
             disableAudioTracks: Bool = false
         ) {
-            #if canImport(UIKit)
-            if playerLayer.videoGravity != videoGravity {
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                playerLayer.videoGravity = videoGravity
-                CATransaction.commit()
-            }
-            #endif
-
             player.isMuted = isMuted
             player.volume = isMuted ? 0.0 : 1.0
 
@@ -135,8 +88,6 @@ public final class FeedPlayerPool {
             }
 
             clear()
-            hasFiredReadyForDisplay = false
-            isReadyForDisplay = false
 
             currentStreamId = streamId
             currentVideoId = videoId
@@ -151,6 +102,12 @@ public final class FeedPlayerPool {
             )
             let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 2.0 // 2.0s lean buffer for A9 2GB RAM
+
+            if disableAudioTracks {
+                for track in item.tracks where track.assetTrack?.mediaType == .audio {
+                    track.isEnabled = false
+                }
+            }
 
             AVTelemetryTracker.shared.bindItem(item, for: videoId)
             player.replaceCurrentItem(with: item)
@@ -177,27 +134,19 @@ public final class FeedPlayerPool {
         }
 
         public func clear() {
-            hasFiredReadyForDisplay = false
-            isReadyForDisplay = false
             currentStreamId = nil
             currentVideoId = nil
             currentPlayUrl = nil
             player.pause()
+            if let item = player.currentItem {
+                AVTelemetryTracker.shared.unbindItem(item)
+            }
             player.replaceCurrentItem(with: nil) // Immediately release VTDecompressionSession to mediaserverd!
 
             if hasRegisteredDecoder {
                 hasRegisteredDecoder = false
                 AVTelemetryTracker.shared.unregisterActiveDecoder()
             }
-
-            #if canImport(UIKit)
-            if playerLayer.superlayer != nil {
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                playerLayer.removeFromSuperlayer()
-                CATransaction.commit()
-            }
-            #endif
         }
 
         deinit {
