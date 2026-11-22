@@ -370,6 +370,7 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func detachPlayer() {
             attachedSlot = nil
+            singlePlayerView.resetDetachedPlayer()
             singlePlayerView.playerLayer.player = nil
             singlePlayerView.alpha = 0.0
             singlePlayerView.onReadyForDisplay = nil

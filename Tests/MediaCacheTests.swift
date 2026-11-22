@@ -190,4 +190,23 @@ final class MediaCacheTests: XCTestCase {
         let pastChunk = storage.readData(for: testKey, offset: 9, length: 10)
         XCTAssertNil(pastChunk)
     }
+
+    func testLocalMediaProxyServerLifecycleAndEnsureRunning() {
+        let proxy = LocalMediaProxyServer.shared
+        proxy.start()
+        XCTAssertTrue(proxy.isRunning)
+        XCTAssertTrue(proxy.port > 0)
+        XCTAssertTrue(proxy.isHealthy())
+
+        // Stop simulation
+        proxy.stop()
+        XCTAssertFalse(proxy.isRunning)
+        XCTAssertFalse(proxy.isHealthy())
+
+        // ensureRunning should detect and heal
+        proxy.ensureRunning()
+        XCTAssertTrue(proxy.isRunning)
+        XCTAssertTrue(proxy.isHealthy())
+        XCTAssertTrue(proxy.port > 0)
+    }
 }

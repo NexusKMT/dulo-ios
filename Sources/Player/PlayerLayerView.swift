@@ -116,6 +116,10 @@ public final class PlayerLayerContainer: UIView {
         setupLifecycle()
     }
 
+    public func resetDetachedPlayer() {
+        detachedPlayer = nil
+    }
+
     private func setupLifecycle() {
         let o1 = NotificationCenter.default.addObserver(
             forName: UIApplication.willResignActiveNotification,

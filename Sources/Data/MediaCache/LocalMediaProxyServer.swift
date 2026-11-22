@@ -4,6 +4,10 @@ import Foundation
 import Darwin
 #endif
 
+#if canImport(UIKit)
+import UIKit
+#endif
+
 /// Lightweight loopback HTTP/1.1 reverse proxy running on `127.0.0.1`.
 /// Intercepts video/audio streaming requests from AVPlayer, transparently serves
 /// cached slices (e.g. 800KB pre-buffers) from disk with 0ms latency, streams missing
@@ -11,21 +15,115 @@ import Darwin
 public final class LocalMediaProxyServer {
     public static let shared = LocalMediaProxyServer()
 
-    private(set) var port: UInt16 = 0
+    public private(set) var port: UInt16 = 0
     private var serverFd: Int32 = -1
-    private var isRunning = false
+    public private(set) var isRunning = false
     private let acceptQueue = DispatchQueue(label: "dev.dulo.localMediaProxy.accept", qos: .userInitiated)
     private let clientQueue = DispatchQueue(label: "dev.dulo.localMediaProxy.client", qos: .userInitiated, attributes: .concurrent)
 
     private let storage: MediaCacheStorage
 
+    #if canImport(UIKit)
+    private var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    #endif
+
     public init(storage: MediaCacheStorage = .shared) {
         self.storage = storage
+        setupLifecycleObservers()
     }
 
-    /// Starts the loopback proxy server on an OS-assigned ephemeral port.
-    public func start() {
-        guard !isRunning else { return }
+    deinit {
+        #if canImport(UIKit)
+        for obs in lifecycleObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        #endif
+        stop()
+    }
+
+    private func setupLifecycleObservers() {
+        #if canImport(UIKit)
+        let o1 = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            if self.bgTaskId != .invalid {
+                UIApplication.shared.endBackgroundTask(self.bgTaskId)
+                self.bgTaskId = .invalid
+            }
+            self.ensureRunning()
+        }
+
+        let o2 = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.ensureRunning()
+        }
+
+        let o3 = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            if self.bgTaskId != .invalid {
+                UIApplication.shared.endBackgroundTask(self.bgTaskId)
+            }
+            self.bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "dev.dulo.localproxy") { [weak self] in
+                guard let self else { return }
+                if self.bgTaskId != .invalid {
+                    UIApplication.shared.endBackgroundTask(self.bgTaskId)
+                    self.bgTaskId = .invalid
+                }
+            }
+        }
+        lifecycleObservers = [o1, o2, o3]
+        #endif
+    }
+
+    /// Checks if the listening socket and accept loop are healthy.
+    public func isHealthy() -> Bool {
+        guard isRunning, serverFd >= 0, port > 0 else { return false }
+        let flags = fcntl(serverFd, F_GETFL)
+        return flags != -1
+    }
+
+    /// Self-healing: if the server was killed or suspended by Darwin kernel, restarts it on the preferred port.
+    public func ensureRunning() {
+        if !isHealthy() {
+            NSLog("[LocalMediaProxyServer] Server not healthy (isRunning=%@, fd=%d, port=%d), restarting...", String(isRunning), serverFd, port)
+            restart()
+        }
+    }
+
+    public func restart() {
+        let preferred = port > 0 ? port : nil
+        stop()
+        start(preferredPort: preferred)
+    }
+
+    public func stop() {
+        isRunning = false
+        if serverFd >= 0 {
+            close(serverFd)
+            serverFd = -1
+        }
+    }
+
+    /// Starts the loopback proxy server on an OS-assigned ephemeral port or preferred port.
+    public func start(preferredPort: UInt16? = nil) {
+        guard !isRunning || !isHealthy() else { return }
+
+        // Clean up previous dead socket if any
+        if serverFd >= 0 {
+            close(serverFd)
+            serverFd = -1
+        }
 
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else {
@@ -35,15 +133,30 @@ public final class LocalMediaProxyServer {
 
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+        #if canImport(Darwin)
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, socklen_t(MemoryLayout<Int32>.size))
+        #endif
+
+        let targetPort = preferredPort ?? (self.port > 0 ? self.port : 0)
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        addr.sin_port = 0 // Assign dynamic port
+        addr.sin_port = targetPort > 0 ? targetPort.bigEndian : 0
 
-        let bindResult = withUnsafePointer(to: &addr) { ptr in
+        var bindResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                 bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+
+        // If binding to preferredPort failed (e.g. port stuck in TIME_WAIT), retry with dynamic port 0
+        if bindResult != 0 && targetPort > 0 {
+            addr.sin_port = 0
+            bindResult = withUnsafePointer(to: &addr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
             }
         }
 
@@ -76,10 +189,9 @@ public final class LocalMediaProxyServer {
 
     /// Converts a remote media URL into a local proxy URL.
     public func proxyUrl(for remoteUrl: URL, cacheKey: String? = nil) -> URL {
+        ensureRunning()
         guard isRunning, port > 0 else {
-            start()
-            if port == 0 { return remoteUrl }
-            return proxyUrl(for: remoteUrl, cacheKey: cacheKey)
+            return remoteUrl
         }
 
         // If already a local URL or file URL, return as-is
@@ -123,6 +235,9 @@ public final class LocalMediaProxyServer {
                 if !isRunning { break }
                 let err = errno
                 if err == EBADF || err == EINVAL || err == ENOTSOCK {
+                    NSLog("[LocalMediaProxyServer] Listening socket invalid (%d), breaking accept loop", err)
+                    self.isRunning = false
+                    self.serverFd = -1
                     break
                 }
                 usleep(10000)

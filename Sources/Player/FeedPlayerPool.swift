@@ -321,6 +321,7 @@ public final class FeedPlayerPool {
     }
 
     public func handleAppBecomeActive() {
+        LocalMediaProxyServer.shared.ensureRunning()
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
         #endif
@@ -344,6 +345,15 @@ public final class FeedPlayerPool {
                 }
             }
         }
+
+        // Also ensure the standby slot's item is self-healed if its socket was severed
+        let standby = (currentPlayingSlot === activeSlot) ? standbySlot : activeSlot
+        if standby.player.currentItem?.status == .failed || standby.player.error != nil {
+            if let sId = standby.currentStreamId, let vId = standby.currentVideoId, let url = standby.currentPlayUrl {
+                standby.prepare(streamId: sId, videoId: vId, playUrl: url, autoplay: false)
+            }
+        }
+
         if bgmPlayer.currentUrl != nil {
             bgmPlayer.resume()
         }
