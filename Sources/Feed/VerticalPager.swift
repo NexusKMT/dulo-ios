@@ -48,7 +48,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         let layout: UICollectionViewFlowLayout
         weak var coordinator: Coordinator?
         var collectionView: UICollectionView!
-        private var lastReportedCount = 0
+        var lastReportedCount = 0
 
         init(layout: UICollectionViewFlowLayout, coordinator: Coordinator) {
             self.layout = layout
@@ -421,7 +421,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 guard self.currentItem?.streamId == streamId, let lease else { return }
 
                 switch lease.value {
-                case .video(let playUrl, let coverStr, let w, let h):
+                case .video(let playUrl, let coverStr, _, _):
                     self.cellMode = .video(playUrl: playUrl)
                     self.currentSlides = []
                     self.currentSlideUrls = []
