@@ -87,15 +87,19 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func update(itemCount: Int) {
             guard let collectionView else { return }
-            if lastReportedCount == 0 {
+            if lastReportedCount == 0 && itemCount > 0 {
                 lastReportedCount = itemCount
                 collectionView.reloadData()
                 coordinator?.preloadAhead(from: 0)
-            } else if itemCount > lastReportedCount {
-                let start = lastReportedCount
+            } else if itemCount != lastReportedCount {
                 lastReportedCount = itemCount
-                let newIndexPaths = (start..<itemCount).map { IndexPath(item: $0, section: 0) }
-                collectionView.insertItems(at: newIndexPaths)
+                // Defer reload until runloop is idle and scroll view is NOT actively dragging
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self, let cv = self.collectionView else { return }
+                    if !cv.isDragging && !cv.isDecelerating {
+                        cv.reloadData()
+                    }
+                }
             }
         }
 
@@ -612,6 +616,31 @@ struct VerticalPager: UIViewControllerRepresentable {
                 return currentSlideUrls[idx.item]
             }
             ImagePipeline.shared.prefetch(urls: urls)
+
+            // Preload upcoming Live Photo motion video loops in horizontal gallery!
+            for idx in indexPaths {
+                let item = idx.item
+                guard item < currentSlides.count else { continue }
+                let slide = currentSlides[item]
+                if let motionUrlStr = slide.motionVideoUrl, let url = URL(string: motionUrlStr) {
+                    let slideKey = "\(currentItem?.video.id ?? "feed")_\(slide.id)"
+                    MediaPreloadManager.shared.preload(
+                        url: url,
+                        key: slideKey,
+                        targetSize: MediaPreloadManager.livePhotoPreloadSize
+                    )
+                }
+            }
+        }
+
+        func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
+            for idx in indexPaths {
+                let item = idx.item
+                guard item < currentSlides.count else { continue }
+                let slide = currentSlides[item]
+                let slideKey = "\(currentItem?.video.id ?? "feed")_\(slide.id)"
+                MediaPreloadManager.shared.cancel(key: slideKey)
+            }
         }
 
         // MARK: - Horizontal Scroll & Sliding Window
@@ -715,15 +744,37 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let videoId = store.items[index].video.id
                 Task { [weak viewModel] in
                     let result = await viewModel?.resolveMedia(id: videoId, force: false)
-                    if case .ready(let lease) = result {
-                        if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
-                            ImagePipeline.shared.prefetch(urls: [url])
-                        }
-                        if case .video(let playUrl, _, _, _) = lease.value, let url = URL(string: playUrl) {
+                    guard case .ready(let lease) = result else { return }
+                    if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
+                        ImagePipeline.shared.prefetch(urls: [url])
+                    }
+                    switch lease.value {
+                    case .video(let playUrl, _, _, _):
+                        if let url = URL(string: playUrl) {
                             MediaPreloadManager.shared.preload(url: url, key: videoId)
+                        }
+                    case .images(_, _, let slides):
+                        if let firstSlide = slides.first,
+                           let motionUrlStr = firstSlide.motionVideoUrl,
+                           let url = URL(string: motionUrlStr) {
+                            let motionKey = "\(videoId)_\(firstSlide.id)"
+                            MediaPreloadManager.shared.preload(
+                                url: url,
+                                key: motionKey,
+                                targetSize: MediaPreloadManager.livePhotoPreloadSize
+                            )
                         }
                     }
                 }
+            }
+        }
+
+        func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
+            for indexPath in indexPaths {
+                let index = indexPath.item
+                guard index >= 0, index < store.items.count else { continue }
+                let videoId = store.items[index].video.id
+                MediaPreloadManager.shared.cancel(key: videoId)
             }
         }
 
@@ -773,8 +824,6 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
 
             refreshVisibleCells()
-
-            store.appendNextIfNeeded(near: currentIndex)
         }
 
         func scrollViewWillEndDragging(
@@ -787,6 +836,8 @@ struct VerticalPager: UIViewControllerRepresentable {
             guard pageHeight > 0 else { return }
             let targetIndex = max(0, min(store.items.count - 1, Int(round(targetContentOffset.pointee.y / pageHeight))))
             guard targetIndex >= 0 && targetIndex < store.items.count else { return }
+
+            let velocityY = abs(velocity.y)
             let targetItem = store.items[targetIndex]
             if store.activeStreamId != targetItem.streamId {
                 store.activeStreamId = targetItem.streamId
@@ -802,7 +853,15 @@ struct VerticalPager: UIViewControllerRepresentable {
                     store.prewarmStreamId = store.items[nextPrewarmIndex].streamId
                 }
                 refreshVisibleCells()
-                preloadAhead(from: targetIndex)
+
+                // Velocity Gating (Doom-Scrolling Protection):
+                // If user is flicking rapidly past multiple videos, cancel stale preloads and do NOT waste video chunk bandwidth!
+                if velocityY > 2.5 {
+                    let retained: Set<String> = [targetItem.video.id]
+                    MediaPreloadManager.shared.cancelAllExcept(retainedKeys: retained)
+                } else {
+                    preloadAhead(from: targetIndex)
+                }
             }
         }
 
@@ -848,8 +907,22 @@ struct VerticalPager: UIViewControllerRepresentable {
             store.visibleStreamIds = [targetId]
             let nextIndex = index + 1
             store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
-            store.appendNextIfNeeded(near: index)
 
+            // Cancel stale preloads outside immediate [index - 1 ... index + 2] window
+            var retainedKeys = Set<String>()
+            for i in max(0, index - 1)...min(store.items.count - 1, index + 2) {
+                retainedKeys.insert(store.items[i].video.id)
+            }
+            MediaPreloadManager.shared.cancelAllExcept(retainedKeys: retainedKeys)
+
+            // Pin active & prewarm items in disk storage
+            MediaCacheStorage.shared.pin(key: "k_\(store.items[index].video.id)")
+            if let prewarmId = store.prewarmStreamId,
+               let prewarmItem = store.items.first(where: { $0.streamId == prewarmId }) {
+                MediaCacheStorage.shared.pin(key: "k_\(prewarmItem.video.id)")
+            }
+
+            store.appendNextIfNeeded(near: index)
             refreshVisibleCells()
             preloadAhead(from: index)
         }
@@ -859,14 +932,34 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let target = index + offset
                 guard target >= 0 && target < store.items.count else { continue }
                 let videoId = store.items[target].video.id
+                let targetSize: Int64 = (offset == 1) ? MediaPreloadManager.videoPreloadSize : (300 * 1024)
+
                 Task { [weak viewModel] in
                     let result = await viewModel?.resolveMedia(id: videoId, force: false)
-                    if case .ready(let lease) = result {
-                        if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
-                            ImagePipeline.shared.prefetch(urls: [url])
+                    guard case .ready(let lease) = result else { return }
+
+                    // 1. Prefetch cover image
+                    if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
+                        ImagePipeline.shared.prefetch(urls: [url])
+                    }
+
+                    // 2. Preload media based on post mode
+                    switch lease.value {
+                    case .video(let playUrl, _, _, _):
+                        if let url = URL(string: playUrl) {
+                            MediaPreloadManager.shared.preload(url: url, key: videoId, targetSize: targetSize)
                         }
-                        if case .video(let playUrl, _, _, _) = lease.value, let url = URL(string: playUrl) {
-                            MediaPreloadManager.shared.preload(url: url, key: videoId)
+                    case .images(_, _, let slides):
+                        // Multi-modal Live Photo preloading: preload the first slide's motion video loop!
+                        if let firstSlide = slides.first,
+                           let motionUrlStr = firstSlide.motionVideoUrl,
+                           let url = URL(string: motionUrlStr) {
+                            let motionKey = "\(videoId)_\(firstSlide.id)"
+                            MediaPreloadManager.shared.preload(
+                                url: url,
+                                key: motionKey,
+                                targetSize: MediaPreloadManager.livePhotoPreloadSize
+                            )
                         }
                     }
                 }

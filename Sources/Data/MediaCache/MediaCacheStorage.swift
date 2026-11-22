@@ -214,7 +214,10 @@ public final class MediaCacheStorage {
         )
         meta.contentLength = max(meta.contentLength, contentLength)
         meta.contentType = contentType.isEmpty ? meta.contentType : contentType
-        meta.cachedBytes = max(meta.cachedBytes, offset + Int64(data.count))
+        // Prevent sparse holes: only advance cachedBytes if this write connects contiguously to existing cached data
+        if offset <= meta.cachedBytes {
+            meta.cachedBytes = max(meta.cachedBytes, offset + Int64(data.count))
+        }
         meta.lastAccessTime = Date().timeIntervalSince1970
         writeMetadataLocked(meta, for: key, persistToDisk: true)
 

@@ -82,4 +82,36 @@ public final class RemoteTelemetryExporter {
         }
         task.resume()
     }
+
+    /// Synchronously sends a fatal uncaught exception event to telemetry server before process termination.
+    public func exportCrashSynchronously(name: String, reason: String, callStack: String) {
+        guard let endpoint = URL(string: "\(AppSettings.serverBaseUrl)/api/telemetry") else { return }
+        var payload: [String: Any] = [
+            "event_type": "uncaught_exception",
+            "exception_name": name,
+            "exception_reason": reason,
+            "call_stack": callStack,
+            "app_version": AppVersion.marketingVersion,
+            "build_number": AppVersion.buildNumber,
+            "version_tag": AppVersion.displayString,
+            "device_model": AppVersion.deviceModelIdentifier,
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        #if canImport(UIKit)
+        payload["os_version"] = UIDevice.current.systemVersion
+        #endif
+
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: [payload], options: []) else { return }
+        var request = URLRequest(url: endpoint, timeoutInterval: 3.0)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = jsonData
+
+        let sema = DispatchSemaphore(value: 0)
+        let task = URLSession.shared.dataTask(with: request) { _, _, _ in
+            sema.signal()
+        }
+        task.resume()
+        _ = sema.wait(timeout: .now() + 2.0)
+    }
 }

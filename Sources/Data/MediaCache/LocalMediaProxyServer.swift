@@ -181,6 +181,9 @@ public final class LocalMediaProxyServer {
         let hintKey = comps.queryItems?.first(where: { $0.name == "k" })?.value
         let cacheKey = MediaCacheKey.compute(url: remoteUrl, hint: hintKey)
         storage.touch(key: cacheKey)
+        storage.pin(key: cacheKey)
+        // Coalesce request: cancel active background preload task since player is taking over streaming
+        MediaPreloadManager.shared.cancel(key: cacheKey)
 
         // Parse Range Header
         var requestedRange: (start: Int64, end: Int64?)?

@@ -28,9 +28,11 @@ final class FeedStreamStore: ObservableObject {
         seed()
     }
 
-    /// First page plus prepared neighbours for N+2 preloading.
+    /// Pre-seeds a generous buffer (e.g. 60-100 items) from the cyclic queue.
+    /// Eliminates all runtime array mutations and UICollectionView insertions during scrolling.
     private func seed() {
-        while items.count < 3 && items.count < queue.itemsCount {
+        let initialBatch = min(100, max(40, queue.itemsCount * 5))
+        for _ in 0..<initialBatch {
             items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
             nextStreamId += 1
         }
@@ -43,10 +45,12 @@ final class FeedStreamStore: ObservableObject {
         }
     }
 
-    /// Extends the stream when the user nears its end, maintaining an N+2 queue horizon.
+    /// Extends the stream in generous batches only when approaching the end of the pre-seeded buffer.
     func appendNextIfNeeded(near index: Int) {
-        guard index >= items.count - 3 else { return }
-        items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
-        nextStreamId += 1
+        guard index >= items.count - 10 else { return }
+        for _ in 0..<30 {
+            items.append(FeedStreamItem(streamId: nextStreamId, video: queue.next()))
+            nextStreamId += 1
+        }
     }
 }

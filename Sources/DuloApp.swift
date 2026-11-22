@@ -22,6 +22,19 @@ struct DuloApp: App {
     @StateObject private var viewModel = FeedViewModel()
 
     init() {
+        #if canImport(Foundation)
+        NSSetUncaughtExceptionHandler { exception in
+            let stack = exception.callStackSymbols.joined(separator: "\n")
+            let reason = exception.reason ?? "unknown reason"
+            let name = exception.name.rawValue
+            NSLog("[FATAL UNCAUGHT EXCEPTION] %@: %@\n%@", name, reason, stack)
+            RemoteTelemetryExporter.shared.exportCrashSynchronously(
+                name: name,
+                reason: reason,
+                callStack: stack
+            )
+        }
+        #endif
         PlayerFactory.configureAudioSession()
         LocalMediaProxyServer.shared.start()
         PerformanceMonitor.shared.start()
