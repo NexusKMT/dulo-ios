@@ -241,6 +241,27 @@ public final class FeedPlayerPool {
     public let standbySlot = PlayerSlot(slotIndex: 1)
     public let bgmPlayer = BgmAudioPlayer()
 
+    /// Dynamic symmetric 2-decoder allocation adhering to TikTok/Douyin Ping-Pong architecture.
+    /// Preserves existing playback session when transitioning between active and prewarm states,
+    /// completely eliminating video layer teardown, buffer re-fetches, and black screen flicker.
+    public func acquireSlot(for streamId: Int64, visibleStreamIds: Set<Int64>) -> PlayerSlot {
+        // 1. If this streamId is already bound to a slot, keep it!
+        if activeSlot.currentStreamId == streamId { return activeSlot }
+        if standbySlot.currentStreamId == streamId { return standbySlot }
+
+        // 2. Otherwise allocate the slot that is NOT currently visible on screen
+        let activeInUse = activeSlot.currentStreamId.map { visibleStreamIds.contains($0) } ?? false
+        let standbyInUse = standbySlot.currentStreamId.map { visibleStreamIds.contains($0) } ?? false
+
+        if !activeInUse {
+            return activeSlot
+        } else if !standbyInUse {
+            return standbySlot
+        } else {
+            return standbySlot
+        }
+    }
+
     private init() {
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()

@@ -456,9 +456,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                         }
                     }
 
-                    let usesFit = (w > 0 && h > 0 && w > h)
-                    let gravity: AVLayerVideoGravity = usesFit ? .resizeAspect : .resizeAspectFill
-                    self.refreshPlayback(store: store, gravity: gravity)
+                    self.refreshPlayback(store: store, gravity: .resizeAspect)
 
                 case .images(let urls, let music, let slides):
                     self.singleCoverImageView.isHidden = true
@@ -520,28 +518,20 @@ struct VerticalPager: UIViewControllerRepresentable {
                 }
             } else if let playUrl = resolvedPlayUrl {
                 // Single Video Post
-                if isActive {
+                if isActive || isPrewarm {
                     FeedPlayerPool.shared.bgmPlayer.stop()
-                    let slot = FeedPlayerPool.shared.activeSlot
-                    attach(slot: slot)
-                    slot.prepare(
-                        streamId: item.streamId,
-                        videoId: item.video.id,
-                        playUrl: playUrl,
-                        isMuted: false,
-                        autoplay: store.sceneActive,
-                        videoGravity: gravity
+                    let slot = FeedPlayerPool.shared.acquireSlot(
+                        for: item.streamId,
+                        visibleStreamIds: store.visibleStreamIds
                     )
-                } else if isPrewarm {
-                    let slot = FeedPlayerPool.shared.standbySlot
                     attach(slot: slot)
                     slot.prepare(
                         streamId: item.streamId,
                         videoId: item.video.id,
                         playUrl: playUrl,
-                        isMuted: false,
-                        autoplay: false,
-                        videoGravity: gravity
+                        isMuted: !isActive,
+                        autoplay: isActive ? store.sceneActive : true,
+                        videoGravity: .resizeAspect
                     )
                 } else {
                     detachPlayer()
@@ -573,7 +563,10 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let indexPath = IndexPath(item: index, section: 0)
                 guard let cell = self.horizontalCollectionView.cellForItem(at: indexPath) as? GallerySlideCell else { return }
 
-                let slot = FeedPlayerPool.shared.activeSlot
+                let slot = FeedPlayerPool.shared.acquireSlot(
+                    for: self.currentItem?.streamId ?? 0,
+                    visibleStreamIds: [self.currentItem?.streamId ?? 0]
+                )
                 let slideKey = "\(self.currentItem?.video.id ?? "feed")_\(slide.id)"
                 cell.attachMotion(slot: slot)
                 slot.prepare(
@@ -739,39 +732,46 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
 
             // 2. Playback Focus Handoff at Midpoint (Play While Dragging)
-            let targetIndex = Int((offsetY + pageHeight * 0.5) / pageHeight)
-            if targetIndex >= 0 && targetIndex < store.items.count {
-                let targetId = store.items[targetIndex].streamId
-                if store.activeStreamId != targetId {
-                    store.activeStreamId = targetId
-                    let videoId = store.items[targetIndex].video.id
-                    let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
-                    AVTelemetryTracker.shared.recordSwipeTrigger(
-                        for: videoId,
-                        cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
-                        isCacheHit: isCached
-                    )
-                    refreshVisibleCells()
-                    preloadAhead(from: targetIndex)
+            let targetIndex = max(0, min(store.items.count - 1, Int(round(offsetY / pageHeight))))
+            let targetId = store.items[targetIndex].streamId
+            if store.activeStreamId != targetId {
+                store.activeStreamId = targetId
+                let videoId = store.items[targetIndex].video.id
+                let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
+                AVTelemetryTracker.shared.recordSwipeTrigger(
+                    for: videoId,
+                    cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
+                    isCacheHit: isCached
+                )
+            }
+
+            // 3. Symmetric 2-Decoder Allocation:
+            // Primary cell closer to center gets the active decoder.
+            // Secondary cell visible on screen during vertical drag gets the second decoder.
+            // When only 1 cell is visible, the upcoming cell in scroll direction is prewarmed.
+            var secondaryId: Int64? = nil
+            if visibleIds.count > 1 {
+                for i in topIndex...bottomIndex {
+                    if i >= 0 && i < store.items.count {
+                        let sid = store.items[i].streamId
+                        if sid != targetId {
+                            secondaryId = sid
+                            break
+                        }
+                    }
+                }
+            } else {
+                let nextIndex = targetIndex + 1
+                if nextIndex < store.items.count {
+                    secondaryId = store.items[nextIndex].streamId
                 }
             }
 
-            // 3. Strict 2-Decoder Ceiling:
-            // When multiple cells are visible during vertical drag, allocate both hardware decoders to visible cells.
-            // Release offscreen prewarm decoder immediately.
-            // When only 1 cell is visible, allocate standby decoder to prewarm next.
-            if visibleIds.count <= 1 {
-                let nextIndex = targetIndex + 1
-                let nextPrewarm = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
-                if store.prewarmStreamId != nextPrewarm {
-                    store.prewarmStreamId = nextPrewarm
-                    refreshVisibleCells()
-                }
-            } else {
-                if store.prewarmStreamId != nil {
-                    store.prewarmStreamId = nil
-                }
+            if store.prewarmStreamId != secondaryId {
+                store.prewarmStreamId = secondaryId
             }
+
+            refreshVisibleCells()
 
             let currentIndex = max(0, Int(offsetY / pageHeight))
             store.appendNextIfNeeded(near: currentIndex)
