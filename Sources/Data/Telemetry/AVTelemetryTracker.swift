@@ -117,6 +117,12 @@ public final class AVTelemetryTracker: ObservableObject {
             return
         }
 
+        // Idempotency guard: ignore duplicate calls across AVPlayerLooper queue cycles
+        if session.telemetry.isReadyForDisplay {
+            lock.unlock()
+            return
+        }
+
         let elapsedMs = (now - session.triggerTime) * 1000.0
         session.telemetry.ttffMs = elapsedMs
         session.telemetry.isReadyForDisplay = true

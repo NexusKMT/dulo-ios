@@ -272,8 +272,26 @@ public final class LocalMediaProxyServer {
         // 1. Stream from Disk Cache
         if currentOffset < cachedBytes {
             let diskEnd = min(end, cachedBytes - 1)
-            let blockSize = 64 * 1024 // 64 KB blocks
+            let blockSize = 256 * 1024 // 256 KB blocks for high throughput on loopback socket
 
+            if let (fileHandle, availableBytes) = storage.openReadingFileHandle(for: cacheKey) {
+                defer { try? fileHandle.close() }
+                let effectiveDiskEnd = min(diskEnd, availableBytes - 1)
+                do {
+                    try fileHandle.seek(toOffset: UInt64(currentOffset))
+                    while currentOffset <= effectiveDiskEnd {
+                        let toRead = Int(min(Int64(blockSize), effectiveDiskEnd - currentOffset + 1))
+                        let chunk = fileHandle.readData(ofLength: toRead)
+                        if chunk.isEmpty { break }
+                        guard sendData(clientFd, chunk) else { return } // Client disconnected
+                        currentOffset += Int64(chunk.count)
+                    }
+                } catch {
+                    // Seek failed; gracefully fall through to readData fallback
+                }
+            }
+
+            // Fallback for any remaining unstreamed cached bytes
             while currentOffset <= diskEnd {
                 let toRead = Int(min(Int64(blockSize), diskEnd - currentOffset + 1))
                 guard let chunk = storage.readData(for: cacheKey, offset: currentOffset, length: toRead) else {

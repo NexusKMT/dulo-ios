@@ -40,6 +40,7 @@ public final class FeedPlayerPool {
         private var openavtInstrument: OAVTInstrument?
         private var openavtTrackerId: Int?
         private var hasRegisteredDecoder = false
+        private var hasFiredReadyForDisplay = false
 
         public func setMuted(_ muted: Bool) {
             player.isMuted = muted
@@ -78,7 +79,8 @@ public final class FeedPlayerPool {
             self.readyObserver = layer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
                 if layer.isReadyForDisplay {
                     Task { @MainActor in
-                        guard let self else { return }
+                        guard let self, !self.hasFiredReadyForDisplay else { return }
+                        self.hasFiredReadyForDisplay = true
                         self.isReadyForDisplay = true
                         if let vid = self.currentVideoId {
                             AVTelemetryTracker.shared.recordReadyForDisplay(for: vid)
@@ -130,6 +132,8 @@ public final class FeedPlayerPool {
             looper?.disableLooping()
             looper = nil
             player.removeAllItems()
+            hasFiredReadyForDisplay = false
+            isReadyForDisplay = false
             #if canImport(UIKit)
             playerLayer.player = nil
             playerLayer.player = player
@@ -188,10 +192,11 @@ public final class FeedPlayerPool {
             looper?.disableLooping()
             looper = nil
             player.removeAllItems()
+            hasFiredReadyForDisplay = false
+            isReadyForDisplay = false
             currentStreamId = nil
             currentVideoId = nil
             currentPlayUrl = nil
-            isReadyForDisplay = false
 
             if hasRegisteredDecoder {
                 hasRegisteredDecoder = false

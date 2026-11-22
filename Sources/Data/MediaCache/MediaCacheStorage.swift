@@ -31,6 +31,8 @@ public final class MediaCacheStorage {
     private let lock = NSLock()
     private var pinnedKeys: Set<String> = []
     private let fileManager = FileManager.default
+    private var metadataMemoryCache: [String: CacheMetadata] = [:]
+    private var lastEvictionCheckTime: TimeInterval = 0
 
     public init(
         cacheDirectory: URL? = nil,
@@ -106,7 +108,8 @@ public final class MediaCacheStorage {
     private func touchLocked(key: String) {
         guard var meta = readMetadataLocked(for: key) else { return }
         meta.lastAccessTime = Date().timeIntervalSince1970
-        writeMetadataLocked(meta, for: key)
+        // Update in-memory cache; avoid synchronous flash I/O on touch
+        writeMetadataLocked(meta, for: key, persistToDisk: false)
     }
 
     public func setMetadata(for key: String, contentLength: Int64, contentType: String) {
@@ -121,10 +124,27 @@ public final class MediaCacheStorage {
         meta.contentLength = contentLength
         meta.contentType = contentType
         meta.lastAccessTime = Date().timeIntervalSince1970
-        writeMetadataLocked(meta, for: key)
+        writeMetadataLocked(meta, for: key, persistToDisk: true)
     }
 
     // MARK: - Reading & Writing Bytes
+
+    /// Opens an existing cached file handle for high-throughput zero-lock streaming.
+    /// Returns the file handle and the currently cached byte count.
+    public func openReadingFileHandle(for key: String) -> (FileHandle, Int64)? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let meta = readMetadataLocked(for: key), meta.cachedBytes > 0 else {
+            return nil
+        }
+        let dataUrl = itemDirectory(for: key).appendingPathComponent("data")
+        guard let fileHandle = try? FileHandle(forReadingFrom: dataUrl) else {
+            return nil
+        }
+        metadataMemoryCache[key]?.lastAccessTime = Date().timeIntervalSince1970
+        return (fileHandle, meta.cachedBytes)
+    }
 
     public func readData(for key: String, offset: Int64, length: Int) -> Data? {
         lock.lock()
@@ -146,7 +166,8 @@ public final class MediaCacheStorage {
         do {
             try fileHandle.seek(toOffset: UInt64(offset))
             let chunk = fileHandle.readData(ofLength: available)
-            touchLocked(key: key)
+            // Update in-memory access time only; NEVER write to flash storage during streaming read!
+            metadataMemoryCache[key]?.lastAccessTime = Date().timeIntervalSince1970
             return chunk
         } catch {
             return nil
@@ -195,11 +216,16 @@ public final class MediaCacheStorage {
         meta.contentType = contentType.isEmpty ? meta.contentType : contentType
         meta.cachedBytes = max(meta.cachedBytes, offset + Int64(data.count))
         meta.lastAccessTime = Date().timeIntervalSince1970
-        writeMetadataLocked(meta, for: key)
+        writeMetadataLocked(meta, for: key, persistToDisk: true)
 
-        // Asynchronously check LRU watermark if needed
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            self?.evictIfNeeded()
+        // Debounced asynchronous LRU watermark check (at most once every 30s or when download completes)
+        let now = Date().timeIntervalSince1970
+        let isComplete = meta.isComplete
+        if isComplete || (now - lastEvictionCheckTime >= 30.0) {
+            lastEvictionCheckTime = now
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                self?.evictIfNeeded()
+            }
         }
     }
 
@@ -244,6 +270,7 @@ public final class MediaCacheStorage {
             guard totalUsage > targetDiskSize else { break }
             let dirUrl = itemDirectory(for: candidate.key)
             try? fileManager.removeItem(at: dirUrl)
+            metadataMemoryCache.removeValue(forKey: candidate.key)
             totalUsage -= candidate.size
         }
     }
@@ -251,6 +278,7 @@ public final class MediaCacheStorage {
     public func clearAll() {
         lock.lock()
         defer { lock.unlock() }
+        metadataMemoryCache.removeAll()
         try? fileManager.removeItem(at: cacheDirectory)
         try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
@@ -262,15 +290,21 @@ public final class MediaCacheStorage {
     }
 
     private func readMetadataLocked(for key: String) -> CacheMetadata? {
+        if let cached = metadataMemoryCache[key] {
+            return cached
+        }
         let metaUrl = itemDirectory(for: key).appendingPathComponent("metadata.json")
         guard let data = try? Data(contentsOf: metaUrl),
               let meta = try? JSONDecoder().decode(CacheMetadata.self, from: data) else {
             return nil
         }
+        metadataMemoryCache[key] = meta
         return meta
     }
 
-    private func writeMetadataLocked(_ meta: CacheMetadata, for key: String) {
+    private func writeMetadataLocked(_ meta: CacheMetadata, for key: String, persistToDisk: Bool = true) {
+        metadataMemoryCache[key] = meta
+        guard persistToDisk else { return }
         let itemDir = itemDirectory(for: key)
         if !fileManager.fileExists(atPath: itemDir.path) {
             try? fileManager.createDirectory(at: itemDir, withIntermediateDirectories: true)
