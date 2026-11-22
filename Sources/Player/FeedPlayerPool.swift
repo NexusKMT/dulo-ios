@@ -40,6 +40,57 @@ public final class FeedPlayerPool {
         private var openavtInstrument: OAVTInstrument?
         private var openavtTrackerId: Int?
         private var hasRegisteredDecoder = false
+        private var volumeFadeTask: Task<Void, Never>?
+
+        public func setVolume(_ volume: Float) {
+            volumeFadeTask?.cancel()
+            volumeFadeTask = nil
+            player.volume = max(0.0, min(1.0, volume))
+        }
+
+        public func setMuted(_ muted: Bool) {
+            volumeFadeTask?.cancel()
+            volumeFadeTask = nil
+            player.isMuted = muted
+            if muted {
+                player.volume = 0.0
+            } else if player.volume < 0.05 {
+                player.volume = 1.0
+            }
+        }
+
+        public func fadeVolume(to targetVolume: Float, duration: TimeInterval = 0.06) {
+            volumeFadeTask?.cancel()
+            let clampedTarget = max(0.0, min(1.0, targetVolume))
+
+            if clampedTarget > 0 {
+                player.isMuted = false
+            }
+
+            let startVolume = player.volume
+            if abs(startVolume - clampedTarget) < 0.02 {
+                player.volume = clampedTarget
+                if clampedTarget == 0 { player.isMuted = true }
+                return
+            }
+
+            let steps = 4
+            let stepDuration = UInt64((duration / Double(steps)) * 1_000_000_000)
+
+            volumeFadeTask = Task { @MainActor [weak self] in
+                for i in 1...steps {
+                    guard let self, !Task.isCancelled else { return }
+                    let progress = Float(i) / Float(steps)
+                    self.player.volume = startVolume + (clampedTarget - startVolume) * progress
+                    try? await Task.sleep(nanoseconds: stepDuration)
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.player.volume = clampedTarget
+                if clampedTarget == 0 {
+                    self.player.isMuted = true
+                }
+            }
+        }
 
         public init(slotIndex: Int) {
             self.slotIndex = slotIndex
@@ -91,7 +142,8 @@ public final class FeedPlayerPool {
             playUrl: String,
             isMuted: Bool = false,
             autoplay: Bool,
-            videoGravity: AVLayerVideoGravity = .resizeAspect
+            videoGravity: AVLayerVideoGravity = .resizeAspect,
+            disableAudioTracks: Bool = false
         ) {
             #if canImport(UIKit)
             if playerLayer.videoGravity != videoGravity {
@@ -102,9 +154,27 @@ public final class FeedPlayerPool {
             }
             #endif
 
-            player.isMuted = isMuted
+            volumeFadeTask?.cancel()
+            volumeFadeTask = nil
+
+            if isMuted {
+                player.isMuted = true
+                player.volume = 0.0
+            } else {
+                player.isMuted = false
+                if player.volume < 0.05 {
+                    fadeVolume(to: 1.0, duration: 0.06)
+                }
+            }
 
             if currentStreamId == streamId && currentPlayUrl == playUrl {
+                if !isMuted {
+                    if let item = player.currentItem {
+                        for track in item.tracks where track.assetTrack?.mediaType == .audio {
+                            track.isEnabled = true
+                        }
+                    }
+                }
                 if autoplay {
                     player.play()
                 } else {
@@ -136,10 +206,14 @@ public final class FeedPlayerPool {
             let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 3.0
 
-            if isMuted {
+            if disableAudioTracks {
                 // For Live Photo motion loops: disable all audio tracks to free CoreAudio resources
                 for track in item.tracks where track.assetTrack?.mediaType == .audio {
                     track.isEnabled = false
+                }
+            } else if !isMuted {
+                for track in item.tracks where track.assetTrack?.mediaType == .audio {
+                    track.isEnabled = true
                 }
             }
 
@@ -167,6 +241,8 @@ public final class FeedPlayerPool {
         }
 
         public func clear() {
+            volumeFadeTask?.cancel()
+            volumeFadeTask = nil
             looper?.disableLooping()
             looper = nil
             player.removeAllItems()
@@ -260,6 +336,25 @@ public final class FeedPlayerPool {
         } else {
             return standbySlot
         }
+    }
+
+    public func slot(for streamId: Int64) -> PlayerSlot? {
+        if activeSlot.currentStreamId == streamId { return activeSlot }
+        if standbySlot.currentStreamId == streamId { return standbySlot }
+        return nil
+    }
+
+    public func duckVolume(for streamId: Int64, to volume: Float) {
+        slot(for: streamId)?.setVolume(volume)
+    }
+
+    public func restoreFullVolume(for streamId: Int64) {
+        slot(for: streamId)?.fadeVolume(to: 1.0, duration: 0.06)
+    }
+
+    public func handoffAudio(from departingId: Int64, to committedId: Int64) {
+        slot(for: departingId)?.setMuted(true)
+        slot(for: committedId)?.fadeVolume(to: 1.0, duration: 0.06)
     }
 
     private init() {
