@@ -201,6 +201,12 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func attachMotion(slot: FeedPlayerPool.PlayerSlot) {
+            if motionPlayerView.playerLayer.player === slot.player {
+                if motionPlayerView.playerLayer.isReadyForDisplay {
+                    motionPlayerView.alpha = 1.0
+                }
+                return
+            }
             motionPlayerView.playerLayer.player = slot.player
             if motionPlayerView.playerLayer.isReadyForDisplay {
                 motionPlayerView.alpha = 1.0
@@ -249,6 +255,13 @@ struct VerticalPager: UIViewControllerRepresentable {
         private var horizontalCollectionView: HorizontalPagingCollectionView!
 
         // Data & State
+        private enum CellMode {
+            case unconfigured
+            case video(playUrl: String)
+            case gallery(slides: [GallerySlide], bgmUrl: String?)
+        }
+        private var cellMode: CellMode = .unconfigured
+
         private(set) var currentItem: FeedStreamItem?
         private(set) var resolvedPlayUrl: String?
         private var currentTask: Task<Void, Never>?
@@ -328,6 +341,15 @@ struct VerticalPager: UIViewControllerRepresentable {
                 horizontalLayout.itemSize = contentView.bounds.size
                 horizontalLayout.invalidateLayout()
             }
+            switch cellMode {
+            case .video:
+                contentView.bringSubviewToFront(singleCoverImageView)
+                contentView.bringSubviewToFront(singlePlayerView)
+            case .gallery:
+                contentView.bringSubviewToFront(horizontalCollectionView)
+            case .unconfigured:
+                break
+            }
             CATransaction.commit()
         }
 
@@ -348,6 +370,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentItem = nil
             resolvedPlayUrl = nil
             currentBgmUrl = nil
+            cellMode = .unconfigured
 
             // CRITICAL: DO NOT call currentSlides.removeAll() or horizontalCollectionView.reloadData() here!
             // horizontalCollectionView is simply hidden. Its data count matches UIKit layout cache, preventing NSInternalInconsistencyException!
@@ -371,6 +394,12 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func attach(slot: FeedPlayerPool.PlayerSlot) {
             guard singlePlayerView.isHidden == false else { return }
+            if attachedSlot === slot && singlePlayerView.playerLayer.player === slot.player {
+                if singlePlayerView.playerLayer.isReadyForDisplay {
+                    singlePlayerView.alpha = 1.0
+                }
+                return
+            }
             attachedSlot = slot
             singlePlayerView.playerLayer.player = slot.player
             if singlePlayerView.playerLayer.isReadyForDisplay {
@@ -420,11 +449,16 @@ struct VerticalPager: UIViewControllerRepresentable {
 
                 switch lease.value {
                 case .video(let playUrl, let coverStr, let w, let h):
+                    self.cellMode = .video(playUrl: playUrl)
+                    self.currentSlides = []
+                    self.currentSlideUrls = []
+                    self.resolvedPlayUrl = playUrl
+                    self.currentBgmUrl = nil
+
                     self.horizontalCollectionView.isHidden = true
                     self.singleCoverImageView.isHidden = false
                     self.singlePlayerView.isHidden = false
-                    self.resolvedPlayUrl = playUrl
-                    self.currentBgmUrl = nil
+                    self.horizontalCollectionView.reloadData()
 
                     if let coverStr, let coverUrl = URL(string: coverStr), self.singleCoverImageView.image == nil {
                         if let cached = ImagePipeline.shared.cachedImage(for: coverUrl) {
@@ -437,15 +471,16 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.refreshPlayback(store: store, gravity: .resizeAspect)
 
                 case .images(let urls, let music, let slides):
-                    self.singleCoverImageView.isHidden = true
-                    self.singlePlayerView.isHidden = true
-                    self.horizontalCollectionView.isHidden = false
+                    let effectiveSlides = slides.isEmpty ? urls.enumerated().map { GallerySlide(id: "\(video.id)_\($0)", imageUrl: $1) } : slides
+                    self.cellMode = .gallery(slides: effectiveSlides, bgmUrl: music)
+                    self.currentSlides = effectiveSlides
+                    self.currentSlideUrls = effectiveSlides.compactMap { URL(string: $0.imageUrl) }
                     self.resolvedPlayUrl = nil
                     self.currentBgmUrl = music
 
-                    let effectiveSlides = slides.isEmpty ? urls.enumerated().map { GallerySlide(id: "\(video.id)_\($0)", imageUrl: $1) } : slides
-                    self.currentSlides = effectiveSlides
-                    self.currentSlideUrls = effectiveSlides.compactMap { URL(string: $0.imageUrl) }
+                    self.singleCoverImageView.isHidden = true
+                    self.singlePlayerView.isHidden = true
+                    self.horizontalCollectionView.isHidden = false
 
                     // Pin sliding window [0, 1, 2] in RAM
                     ImagePipeline.shared.pin(urls: Array(self.currentSlideUrls.prefix(3)))
@@ -470,8 +505,45 @@ struct VerticalPager: UIViewControllerRepresentable {
             let isActive = (store.activeStreamId == item.streamId)
             let isPrewarm = (store.prewarmStreamId == item.streamId)
 
-            if !currentSlides.isEmpty {
-                // Multi-Modal Gallery Post
+            switch cellMode {
+            case .video(let playUrl):
+                if isActive {
+                    let slot = FeedPlayerPool.shared.acquireSlot(
+                        for: item.streamId,
+                        visibleStreamIds: store.visibleStreamIds
+                    )
+                    slot.prepare(
+                        streamId: item.streamId,
+                        videoId: item.video.id,
+                        playUrl: playUrl,
+                        isMuted: false,
+                        autoplay: store.sceneActive,
+                        videoGravity: gravity
+                    )
+                    attach(slot: slot)
+                    if store.sceneActive {
+                        FeedPlayerPool.shared.play(slot: slot)
+                    }
+                } else if isPrewarm {
+                    // Prewarm cell: attaches slot and prepares paused first frame to prevent black flash, but NEVER plays!
+                    let slot = FeedPlayerPool.shared.acquireSlot(
+                        for: item.streamId,
+                        visibleStreamIds: store.visibleStreamIds
+                    )
+                    slot.prepare(
+                        streamId: item.streamId,
+                        videoId: item.video.id,
+                        playUrl: playUrl,
+                        isMuted: true,
+                        autoplay: false,
+                        videoGravity: gravity
+                    )
+                    attach(slot: slot)
+                } else {
+                    detachPlayer()
+                }
+
+            case .gallery:
                 if isActive {
                     // Play independent BGM
                     if let bgm = currentBgmUrl {
@@ -494,43 +566,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                         }
                     }
                 }
-            } else if let playUrl = resolvedPlayUrl {
-                // Single Video Post: strictly only ONE in playback at any time
-                if isActive {
-                    let slot = FeedPlayerPool.shared.acquireSlot(
-                        for: item.streamId,
-                        visibleStreamIds: store.visibleStreamIds
-                    )
-                    attach(slot: slot)
-                    slot.prepare(
-                        streamId: item.streamId,
-                        videoId: item.video.id,
-                        playUrl: playUrl,
-                        isMuted: false,
-                        autoplay: store.sceneActive,
-                        videoGravity: .resizeAspect
-                    )
-                    if store.sceneActive {
-                        FeedPlayerPool.shared.play(slot: slot)
-                    }
-                } else if isPrewarm {
-                    // Prewarm cell: attaches slot and prepares paused first frame to prevent black flash, but NEVER plays!
-                    let slot = FeedPlayerPool.shared.acquireSlot(
-                        for: item.streamId,
-                        visibleStreamIds: store.visibleStreamIds
-                    )
-                    attach(slot: slot)
-                    slot.prepare(
-                        streamId: item.streamId,
-                        videoId: item.video.id,
-                        playUrl: playUrl,
-                        isMuted: true,
-                        autoplay: false,
-                        videoGravity: .resizeAspect
-                    )
-                } else {
-                    detachPlayer()
-                }
+
+            case .unconfigured:
+                break
             }
         }
 
@@ -563,7 +601,6 @@ struct VerticalPager: UIViewControllerRepresentable {
                     visibleStreamIds: [self.currentItem?.streamId ?? 0]
                 )
                 let slideKey = "\(self.currentItem?.video.id ?? "feed")_\(slide.id)"
-                cell.attachMotion(slot: slot)
                 slot.prepare(
                     streamId: self.currentItem?.streamId ?? 0,
                     videoId: slideKey,
@@ -573,6 +610,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                     videoGravity: .resizeAspect,
                     disableAudioTracks: true
                 )
+                cell.attachMotion(slot: slot)
             }
         }
 
