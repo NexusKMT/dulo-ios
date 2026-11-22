@@ -132,13 +132,13 @@ public final class LocalMediaProxyServer {
             var nodelay: Int32 = 1
             setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &nodelay, socklen_t(MemoryLayout<Int32>.size))
 
-            // Set send/receive buffer sizes to 256KB for high-throughput loopback transfers
-            var bufSize: Int32 = 256 * 1024
+            // Set send/receive buffer sizes to 512KB for high-throughput loopback transfers
+            var bufSize: Int32 = 512 * 1024
             setsockopt(clientFd, SOL_SOCKET, SO_SNDBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
             setsockopt(clientFd, SOL_SOCKET, SO_RCVBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
 
-            // Set socket timeouts to 15 seconds
-            var tv = timeval(tv_sec: 15, tv_usec: 0)
+            // Set socket timeouts to 30 seconds
+            var tv = timeval(tv_sec: 30, tv_usec: 0)
             setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
             setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
 
@@ -350,7 +350,7 @@ public final class LocalMediaProxyServer {
         totalLength: Int64,
         contentType: String
     ) {
-        var request = URLRequest(url: remoteUrl, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        var request = URLRequest(url: remoteUrl, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
         request.setValue(MediaNetworkHeaders.douyinUA, forHTTPHeaderField: "User-Agent")
         request.setValue(MediaNetworkHeaders.douyinReferer, forHTTPHeaderField: "Referer")
         request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
@@ -358,10 +358,13 @@ public final class LocalMediaProxyServer {
         let semaphore = DispatchSemaphore(value: 0)
         var writeOffset = start
         var clientAlive = true
+        var isCompleted = false
+        var lastActivityTime = Date().timeIntervalSince1970
 
         var streamingTask: URLSessionDataTask?
-        let streamer = ChunkStreamer { chunk in
-            guard clientAlive else { return false }
+        let streamer = ChunkStreamer { [weak self] chunk in
+            guard let self, clientAlive else { return false }
+            lastActivityTime = Date().timeIntervalSince1970
             if self.sendData(clientFd, chunk) {
                 self.storage.writeData(
                     for: cacheKey,
@@ -371,6 +374,7 @@ public final class LocalMediaProxyServer {
                     contentType: contentType
                 )
                 writeOffset += Int64(chunk.count)
+                lastActivityTime = Date().timeIntervalSince1970
                 return true
             } else {
                 clientAlive = false
@@ -378,6 +382,7 @@ public final class LocalMediaProxyServer {
                 return false
             }
         } onComplete: {
+            isCompleted = true
             semaphore.signal()
         }
 
@@ -386,10 +391,19 @@ public final class LocalMediaProxyServer {
         streamingTask = task
         task.resume()
 
-        let waitResult = semaphore.wait(timeout: .now() + 25.0)
-        if waitResult == .timedOut {
-            task.cancel()
+        // Adaptive Inactivity Watchdog: only cancels if NO data is transferred for 30 consecutive seconds
+        while !isCompleted && clientAlive {
+            let waitResult = semaphore.wait(timeout: .now() + 2.0)
+            if waitResult == .success {
+                break
+            }
+            let idleSeconds = Date().timeIntervalSince1970 - lastActivityTime
+            if idleSeconds >= 30.0 {
+                task.cancel()
+                break
+            }
         }
+
         customSession.invalidateAndCancel()
         storage.flushMetadata(for: cacheKey)
     }
@@ -448,10 +462,31 @@ public final class LocalMediaProxyServer {
 
             while totalSent < length {
                 let sent = send(fd, ptr.advanced(by: totalSent), length - totalSent, 0)
-                if sent <= 0 {
-                    return false // Broken pipe or socket error
+                if sent > 0 {
+                    totalSent += sent
+                } else if sent == 0 {
+                    return false
+                } else {
+                    let err = errno
+                    if err == EAGAIN || err == EWOULDBLOCK {
+                        // Socket send buffer is full (AVPlayer paused reading or buffer saturated).
+                        // Poll with POLLOUT for up to 1000ms.
+                        var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                        let pollRes = poll(&pfd, 1, 1000)
+                        if pollRes > 0 && (pfd.revents & Int16(POLLOUT)) != 0 {
+                            continue // Socket is writable again!
+                        } else if pollRes == 0 {
+                            // 1 second poll timed out, retry loop while checking socket health
+                            continue
+                        } else {
+                            return false // Socket error or broken pipe
+                        }
+                    } else if err == EINTR {
+                        continue
+                    } else {
+                        return false // Broken pipe (EPIPE) or connection reset
+                    }
                 }
-                totalSent += sent
             }
             return true
         }

@@ -123,4 +123,52 @@ final class MediaCacheTests: XCTestCase {
         XCTAssertNotNil(fetched)
         XCTAssertEqual(fetched, rawBytes)
     }
+
+    func testMoovBoundaryParsingShortVideo() {
+        // Synthetic MP4: ftyp (32 bytes) + moov (133,717 bytes)
+        var header = Data()
+        var ftypSize: UInt32 = UInt32(32).bigEndian
+        withUnsafeBytes(of: &ftypSize) { header.append(contentsOf: $0) }
+        header.append("ftyp".data(using: .isoLatin1)!)
+        header.append(Data(repeating: 0, count: 24))
+
+        var moovSize: UInt32 = UInt32(133717).bigEndian
+        withUnsafeBytes(of: &moovSize) { header.append(contentsOf: $0) }
+        header.append("moov".data(using: .isoLatin1)!)
+
+        let boundary = MediaPreloadManager.parseMoovBoundary(in: header)
+        XCTAssertEqual(boundary, 133749)
+    }
+
+    func testMoovBoundaryParsingLongVideo() {
+        // Synthetic 42-minute MP4 (e.g. 阳光谷一口气看完): ftyp (32 bytes) + moov (2,022,417 bytes)
+        var header = Data()
+        var ftypSize: UInt32 = UInt32(32).bigEndian
+        withUnsafeBytes(of: &ftypSize) { header.append(contentsOf: $0) }
+        header.append("ftyp".data(using: .isoLatin1)!)
+        header.append(Data(repeating: 0, count: 24))
+
+        var moovSize: UInt32 = UInt32(2022417).bigEndian
+        withUnsafeBytes(of: &moovSize) { header.append(contentsOf: $0) }
+        header.append("moov".data(using: .isoLatin1)!)
+
+        let boundary = MediaPreloadManager.parseMoovBoundary(in: header)
+        XCTAssertEqual(boundary, 2022449)
+    }
+
+    func testMoovBoundaryParsingMdatFirstReturnsNil() {
+        // Synthetic MP4 with moov at EOF (mdat first)
+        var header = Data()
+        var ftypSize: UInt32 = UInt32(32).bigEndian
+        withUnsafeBytes(of: &ftypSize) { header.append(contentsOf: $0) }
+        header.append("ftyp".data(using: .isoLatin1)!)
+        header.append(Data(repeating: 0, count: 24))
+
+        var mdatSize: UInt32 = UInt32(100000).bigEndian
+        withUnsafeBytes(of: &mdatSize) { header.append(contentsOf: $0) }
+        header.append("mdat".data(using: .isoLatin1)!)
+
+        let boundary = MediaPreloadManager.parseMoovBoundary(in: header)
+        XCTAssertNil(boundary)
+    }
 }

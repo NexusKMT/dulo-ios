@@ -1,20 +1,23 @@
 import Foundation
 
 /// Industrial-grade, zero-player pre-buffering manager (ByteDance TTVideoEngine & KTVHTTPCache benchmark).
-/// Pre-downloads the first 800KB (`bytes=0-819199`) of upcoming videos (N+1) and 400KB of Live Photo motion loops directly to disk.
+/// Pre-downloads upcoming videos (N+1) and Live Photo motion loops directly to disk with moov-aware adaptive expansion.
 /// Consumes 0 hardware decoders and negligible RAM, enabling true 0ms first-frame instant startup.
 public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
     public static let shared = MediaPreloadManager()
 
-    public static let videoPreloadSize: Int64 = 800 * 1024 // 800 KB (TTVideoEngine standard: covers moov + first 1-2 GOPs)
+    public static let videoPreloadSize: Int64 = 800 * 1024 // 800 KB (TTVideoEngine baseline: covers moov + first 1-2 GOPs for short videos)
     public static let livePhotoPreloadSize: Int64 = 400 * 1024 // 400 KB (Live Photo loop)
+    public static let maxAdaptivePreloadSize: Int64 = 8 * 1024 * 1024 // 8 MB upper bound safety ceiling for super-long videos
 
     private struct TaskContext {
         let key: String
-        let targetSize: Int64
+        var targetSize: Int64
         var currentOffset: Int64
         var totalLength: Int64
         var contentType: String
+        var headerBuffer: Data
+        var hasParsedHeader: Bool
     }
 
     private let storage: MediaCacheStorage
@@ -24,8 +27,8 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 12
-        config.timeoutIntervalForResource = 24
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
         config.httpMaximumConnectionsPerHost = 2
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
@@ -35,7 +38,43 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
         super.init()
     }
 
+    /// Parses ISO BMFF (MP4) box headers (ftyp, moov) to calculate the exact byte boundary needed to decode the video.
+    /// Returns the required byte offset (moov.offset + moov.size) if moov is at the file start, or nil.
+    public static func parseMoovBoundary(in data: Data) -> Int64? {
+        guard data.count >= 16 else { return nil }
+        var offset = 0
+        let count = data.count
+
+        while offset + 8 <= count {
+            let boxSize32 = data.subdata(in: offset..<offset+4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+            let boxType = String(data: data.subdata(in: offset+4..<offset+8), encoding: .isoLatin1) ?? ""
+
+            var boxSize = Int64(boxSize32)
+            if boxSize32 == 1 {
+                // 64-bit large box
+                guard offset + 16 <= count else { break }
+                boxSize = Int64(data.subdata(in: offset+8..<offset+16).withUnsafeBytes { $0.load(as: UInt64.self).bigEndian })
+            } else if boxSize32 == 0 {
+                // Box extends to EOF
+                break
+            }
+
+            if boxType == "moov" {
+                // moov box spans from offset to offset + boxSize
+                return Int64(offset) + boxSize
+            } else if boxType == "mdat" {
+                // mdat encountered before moov -> moov is located at EOF
+                break
+            }
+
+            if boxSize <= 0 || boxSize > 500 * 1024 * 1024 { break }
+            offset += Int(boxSize)
+        }
+        return nil
+    }
+
     /// Preloads up to `targetSize` bytes (default 800KB) of the specified video/motion URL directly to disk.
+    /// Dynamically expands targetSize if the MP4 moov atom exceeds the initial budget.
     public func preload(url: URL, key: String? = nil, targetSize: Int64 = videoPreloadSize) {
         let cacheKey = MediaCacheKey.compute(url: url, hint: key)
 
@@ -52,10 +91,12 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
         }
         lock.unlock()
 
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        // Send Range header with room for dynamic moov expansion up to maxAdaptivePreloadSize
+        let requestCeiling = max(targetSize, Self.maxAdaptivePreloadSize)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue(MediaNetworkHeaders.douyinUA, forHTTPHeaderField: "User-Agent")
         request.setValue(MediaNetworkHeaders.douyinReferer, forHTTPHeaderField: "Referer")
-        request.setValue("bytes=0-\(targetSize - 1)", forHTTPHeaderField: "Range")
+        request.setValue("bytes=0-\(requestCeiling - 1)", forHTTPHeaderField: "Range")
 
         let task = session.dataTask(with: request)
         let taskId = task.taskIdentifier
@@ -67,7 +108,9 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
             targetSize: targetSize,
             currentOffset: 0,
             totalLength: 0,
-            contentType: "video/mp4"
+            contentType: "video/mp4",
+            headerBuffer: Data(),
+            hasParsedHeader: false
         )
         lock.unlock()
 
@@ -124,6 +167,25 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
         let key = ctx.key
         let totalLen = ctx.totalLength
         let cType = ctx.contentType
+
+        // ByteDance TTVideoEngine moov-Aware Dynamic Expansion:
+        // Parse ISO BMFF container on initial packet(s) to accurately calculate required moov boundary
+        if !ctx.hasParsedHeader {
+            if ctx.headerBuffer.count < 1024 {
+                ctx.headerBuffer.append(data.prefix(1024 - ctx.headerBuffer.count))
+            }
+            if let requiredMoovBoundary = Self.parseMoovBoundary(in: ctx.headerBuffer) {
+                ctx.hasParsedHeader = true
+                ctx.headerBuffer.removeAll()
+                let dynamicTarget = requiredMoovBoundary + (512 * 1024) // moov + first GOP
+                ctx.targetSize = min(max(ctx.targetSize, dynamicTarget), Self.maxAdaptivePreloadSize)
+            } else if ctx.currentOffset >= 65536 {
+                // If 64KB passed without identifying moov at start, fallback to default targetSize
+                ctx.hasParsedHeader = true
+                ctx.headerBuffer.removeAll()
+            }
+        }
+
         let reachedLimit = ctx.currentOffset >= ctx.targetSize
         taskContexts[dataTask.taskIdentifier] = ctx
         lock.unlock()
@@ -137,8 +199,7 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
             contentType: cType
         )
 
-        // If target size reached (e.g. 800KB preloaded), gracefully stop!
-        // This also protects against servers that return 200 OK (full file) ignoring Range header.
+        // If target size reached, gracefully stop!
         if reachedLimit {
             dataTask.cancel()
             cleanupTask(dataTask.taskIdentifier, key: key)
