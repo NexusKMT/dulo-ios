@@ -28,7 +28,7 @@ public final class AVTelemetryTracker: ObservableObject {
     @Published public private(set) var activeDecoderCount: Int = 0
 
     private var trackingSessions: [String: SessionState] = [:]
-    private var itemObservers: [AVPlayerItem: String] = [:]
+    private let itemObservers = NSMapTable<AVPlayerItem, NSString>.weakToStrongObjects()
     private let lock = NSLock()
 
     private struct SessionState {
@@ -95,15 +95,16 @@ public final class AVTelemetryTracker: ObservableObject {
     }
 
     /// Binds an active AVPlayerItem to its videoId for access log event routing.
+    /// Uses weak key reference to guarantee AVPlayerItem is automatically unheld when destroyed.
     public func bindItem(_ item: AVPlayerItem, for videoId: String) {
         lock.lock()
-        itemObservers[item] = videoId
+        itemObservers.setObject(videoId as NSString, forKey: item)
         lock.unlock()
     }
 
     public func unbindItem(_ item: AVPlayerItem) {
         lock.lock()
-        itemObservers.removeValue(forKey: item)
+        itemObservers.removeObject(forKey: item)
         lock.unlock()
     }
 
@@ -153,7 +154,7 @@ public final class AVTelemetryTracker: ObservableObject {
               let lastEvent = accessLog.events.last else { return }
 
         lock.lock()
-        guard let videoId = itemObservers[item], var session = trackingSessions[videoId] else {
+        guard let videoId = itemObservers.object(forKey: item) as String?, var session = trackingSessions[videoId] else {
             lock.unlock()
             return
         }
@@ -176,7 +177,7 @@ public final class AVTelemetryTracker: ObservableObject {
               let lastEvent = errorLog.events.last else { return }
 
         lock.lock()
-        guard let videoId = itemObservers[item], var session = trackingSessions[videoId] else {
+        guard let videoId = itemObservers.object(forKey: item) as String?, var session = trackingSessions[videoId] else {
             lock.unlock()
             return
         }
@@ -195,7 +196,7 @@ public final class AVTelemetryTracker: ObservableObject {
     @objc private func handlePlaybackStalled(_ notification: Notification) {
         guard let item = notification.object as? AVPlayerItem else { return }
         lock.lock()
-        guard let videoId = itemObservers[item], var session = trackingSessions[videoId] else {
+        guard let videoId = itemObservers.object(forKey: item) as String?, var session = trackingSessions[videoId] else {
             lock.unlock()
             return
         }

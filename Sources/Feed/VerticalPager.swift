@@ -129,6 +129,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         let coverImageView = UIImageView()
         let motionContainerView = UIView()
         private var currentUrl: URL?
+        private var imageLoadTask: Task<Void, Never>?
         private weak var attachedSlot: FeedPlayerPool.PlayerSlot?
 
         override init(frame: CGRect) {
@@ -172,6 +173,8 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         override func prepareForReuse() {
             super.prepareForReuse()
+            imageLoadTask?.cancel()
+            imageLoadTask = nil
             currentUrl = nil
             coverImageView.image = nil
             detachMotion()
@@ -225,7 +228,8 @@ struct VerticalPager: UIViewControllerRepresentable {
                 return
             }
 
-            Task { @MainActor [weak self] in
+            imageLoadTask?.cancel()
+            imageLoadTask = Task { @MainActor [weak self] in
                 let img = await ImagePipeline.shared.loadImage(for: url)
                 if self?.currentUrl == url {
                     self?.coverImageView.image = img
@@ -355,13 +359,11 @@ struct VerticalPager: UIViewControllerRepresentable {
             singlePlayerContainerView.alpha = 0.0
             currentSlides.removeAll()
 
-            // Safe sync offset reset without animation or layout thrashing
+            // Safe reset without redundant nested collection view layout cycles
             isReconfiguring = true
             currentSlideIndex = 0
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            horizontalCollectionView.reloadData()
-            horizontalCollectionView.setContentOffset(.zero, animated: false)
             horizontalCollectionView.isHidden = true
             singleCoverImageView.isHidden = false
             singlePlayerContainerView.isHidden = false
@@ -708,6 +710,15 @@ struct VerticalPager: UIViewControllerRepresentable {
             collectionView.bounds.size
         }
 
+        func collectionView(
+            _ collectionView: UICollectionView,
+            didEndDisplaying cell: UICollectionViewCell,
+            forItemAt indexPath: IndexPath
+        ) {
+            guard let feedCell = cell as? FeedVideoCell else { return }
+            feedCell.detachPlayer()
+        }
+
         // MARK: - UICollectionViewDataSourcePrefetching
 
         func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
@@ -777,6 +788,35 @@ struct VerticalPager: UIViewControllerRepresentable {
             refreshVisibleCells()
 
             store.appendNextIfNeeded(near: currentIndex)
+        }
+
+        func scrollViewWillEndDragging(
+            _ scrollView: UIScrollView,
+            withVelocity velocity: CGPoint,
+            targetContentOffset: UnsafeMutablePointer<CGPoint>
+        ) {
+            guard !store.items.isEmpty else { return }
+            let pageHeight = scrollView.bounds.height
+            guard pageHeight > 0 else { return }
+            let targetIndex = max(0, min(store.items.count - 1, Int(round(targetContentOffset.pointee.y / pageHeight))))
+            guard targetIndex >= 0 && targetIndex < store.items.count else { return }
+            let targetItem = store.items[targetIndex]
+            if store.activeStreamId != targetItem.streamId {
+                store.activeStreamId = targetItem.streamId
+                let videoId = targetItem.video.id
+                let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
+                AVTelemetryTracker.shared.recordSwipeTrigger(
+                    for: videoId,
+                    cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
+                    isCacheHit: isCached
+                )
+                let nextPrewarmIndex = velocity.y < 0 ? targetIndex - 1 : targetIndex + 1
+                if nextPrewarmIndex >= 0 && nextPrewarmIndex < store.items.count {
+                    store.prewarmStreamId = store.items[nextPrewarmIndex].streamId
+                }
+                refreshVisibleCells()
+                preloadAhead(from: targetIndex)
+            }
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {

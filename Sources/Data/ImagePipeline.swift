@@ -38,24 +38,20 @@ actor AsyncSemaphore {
 final class ImagePipeline {
     static let shared = ImagePipeline()
 
-    // L1 LRU Memory Cache (40MB limit, ~15 1080p images)
+    // L1 LRU Memory Cache (60MB limit, strictly purges on memory pressure)
     private let memoryCache: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
-        cache.totalCostLimit = 40 * 1024 * 1024
-        cache.countLimit = 25
+        cache.totalCostLimit = 60 * 1024 * 1024
+        cache.countLimit = 30
         return cache
     }()
-
-    // Active Card Pinning: Strongly retains bitmaps of the currently visible post's slides.
-    // Immune to NSCache eviction and memory warnings while the post is active.
-    private var pinnedImages: [URL: UIImage] = [:]
 
     // Apple A9 dual-core concurrency limiter: prevents image decoding from starving main-thread RunLoop.
     private let decodeSemaphore = AsyncSemaphore(value: 2)
     private var inFlight: [URL: Task<UIImage?, Never>] = [:]
 
     private init() {
-        // Evict unpinned LRU memory on system memory pressure, but protect pinned active images!
+        // Pure NSCache management: immediately evict all uncompressed memory on system warning
         NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
@@ -65,29 +61,16 @@ final class ImagePipeline {
         }
     }
 
-    // MARK: - Active Card Pinning (Zero Black Screens on Active Carousel)
+    // MARK: - Compatibility Stubs (Pinned Images Removed for Jetsam Safety)
 
-    /// Pins active gallery URLs into RAM, preventing eviction during horizontal swiping.
-    func pin(urls: [URL]) {
-        for url in urls {
-            if let img = cachedImage(for: url) {
-                pinnedImages[url] = img
-            }
-        }
-    }
-
-    /// Releases pinned URLs when user vertically navigates away from the post.
-    func unpin(urls: [URL]) {
-        for url in urls {
-            pinnedImages.removeValue(forKey: url)
-        }
-    }
+    func pin(urls: [URL]) {}
+    func unpin(urls: [URL]) {}
 
     // MARK: - Synchronous 0ms RAM Probe
 
     /// Synchronously retrieves a pre-decoded, hardware-ready UIImage from RAM if available.
     func cachedImage(for url: URL) -> UIImage? {
-        pinnedImages[url] ?? memoryCache.object(forKey: url as NSURL)
+        memoryCache.object(forKey: url as NSURL)
     }
 
     // MARK: - Multi-Tier Loading Pipeline
@@ -134,21 +117,17 @@ final class ImagePipeline {
             await decodeSemaphore.wait()
             defer { Task { await decodeSemaphore.signal() } }
 
-            // 6. ImageIO DCT Downsampling: 1080px matched to iPhone 6s Plus physical panel
-            guard let downsampled = self.decodeAndDownsample(data: data, maxPixelSize: 1080) else {
+            // 6. ImageIO DCT Downsampling: 1920px max dimension for iPhone 6s Plus native panel
+            guard let downsampled = self.decodeAndDownsample(data: data, maxPixelSize: 1920) else {
                 return nil
             }
 
-            // 7. iOS 15 Hardware Texture Preparation: Pre-renders on background thread
-            // Eliminates CATransaction.commit() main thread hitching (0.1ms vs 25ms)!
-            let hardwareReady = await downsampled.byPreparingForDisplay() ?? downsampled
-
-            // 8. Populate L1 RAM Cache
-            let cost = Int(hardwareReady.size.width * hardwareReady.scale * hardwareReady.size.height * hardwareReady.scale * 4)
+            // 7. Populate L1 RAM Cache (Single decoded bitmap buffer, zero duplicate allocations!)
+            let cost = (downsampled.cgImage?.bytesPerRow ?? Int(downsampled.size.width * 4)) * (downsampled.cgImage?.height ?? Int(downsampled.size.height))
             await MainActor.run {
-                self.memoryCache.setObject(hardwareReady, forKey: url as NSURL, cost: cost)
+                self.memoryCache.setObject(downsampled, forKey: url as NSURL, cost: cost)
             }
-            return hardwareReady
+            return downsampled
         }
 
         inFlight[url] = task
@@ -166,7 +145,7 @@ final class ImagePipeline {
     }
 
     /// Decodes and downsamples image data to screen dimensions using ImageIO.
-    private nonisolated func decodeAndDownsample(data: Data, maxPixelSize: CGFloat = 1080) -> UIImage? {
+    private nonisolated func decodeAndDownsample(data: Data, maxPixelSize: CGFloat = 1920) -> UIImage? {
         let options: [CFString: Any] = [
             kCGImageSourceShouldCache: false
         ]

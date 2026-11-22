@@ -24,11 +24,11 @@ public final class FeedPlayerPool {
     @MainActor
     public final class PlayerSlot {
         public let slotIndex: Int
-        public let player: AVQueuePlayer
+        public let player = AVPlayer()
         #if canImport(UIKit)
         public let playerLayer: AVPlayerLayer
         #endif
-        private var looper: AVPlayerLooper?
+        private var endObserver: NSObjectProtocol?
         private var readyObserver: NSKeyValueObservation?
 
         public private(set) var currentStreamId: Int64?
@@ -49,11 +49,23 @@ public final class FeedPlayerPool {
 
         public init(slotIndex: Int) {
             self.slotIndex = slotIndex
-            let player = AVQueuePlayer()
             player.automaticallyWaitsToMinimizeStalling = false
             player.preventsDisplaySleepDuringVideoPlayback = true
             player.actionAtItemEnd = .none
-            self.player = player
+
+            // Gapless single-item loop: keeps the existing VTDecompressionSession alive across loops
+            endObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self = self,
+                      let currentItem = self.player.currentItem,
+                      (notification.object as? AVPlayerItem) === currentItem else { return }
+                self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                    self?.player.play()
+                }
+            }
 
             #if canImport(UIKit)
             let layer = AVPlayerLayer(player: player)
@@ -113,14 +125,7 @@ public final class FeedPlayerPool {
             player.isMuted = isMuted
             player.volume = isMuted ? 0.0 : 1.0
 
-            if currentStreamId == streamId && currentPlayUrl == playUrl {
-                if !isMuted {
-                    if let item = player.currentItem {
-                        for track in item.tracks where track.assetTrack?.mediaType == .audio {
-                            track.isEnabled = true
-                        }
-                    }
-                }
+            if currentStreamId == streamId && currentPlayUrl == playUrl && player.currentItem != nil {
                 if autoplay {
                     player.play()
                 } else {
@@ -129,20 +134,13 @@ public final class FeedPlayerPool {
                 return
             }
 
-            looper?.disableLooping()
-            looper = nil
-            player.removeAllItems()
+            clear()
             hasFiredReadyForDisplay = false
             isReadyForDisplay = false
-            #if canImport(UIKit)
-            playerLayer.player = nil
-            playerLayer.player = player
-            #endif
 
             currentStreamId = streamId
             currentVideoId = videoId
             currentPlayUrl = playUrl
-            isReadyForDisplay = false
 
             guard let url = URL(string: playUrl) else { return }
 
@@ -152,21 +150,10 @@ public final class FeedPlayerPool {
                 options: ["AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders]
             )
             let item = AVPlayerItem(asset: asset)
-            item.preferredForwardBufferDuration = 3.0
-
-            if disableAudioTracks {
-                // For Live Photo motion loops: disable all audio tracks to free CoreAudio resources
-                for track in item.tracks where track.assetTrack?.mediaType == .audio {
-                    track.isEnabled = false
-                }
-            } else if !isMuted {
-                for track in item.tracks where track.assetTrack?.mediaType == .audio {
-                    track.isEnabled = true
-                }
-            }
+            item.preferredForwardBufferDuration = 2.0 // 2.0s lean buffer for A9 2GB RAM
 
             AVTelemetryTracker.shared.bindItem(item, for: videoId)
-            self.looper = AVPlayerLooper(player: player, templateItem: item)
+            player.replaceCurrentItem(with: item)
 
             if !hasRegisteredDecoder {
                 hasRegisteredDecoder = true
@@ -177,6 +164,7 @@ public final class FeedPlayerPool {
                 player.play()
             } else {
                 player.pause()
+                player.preroll(atRate: 0.0) { _ in }
             }
         }
 
@@ -189,14 +177,13 @@ public final class FeedPlayerPool {
         }
 
         public func clear() {
-            looper?.disableLooping()
-            looper = nil
-            player.removeAllItems()
             hasFiredReadyForDisplay = false
             isReadyForDisplay = false
             currentStreamId = nil
             currentVideoId = nil
             currentPlayUrl = nil
+            player.pause()
+            player.replaceCurrentItem(with: nil) // Immediately release VTDecompressionSession to mediaserverd!
 
             if hasRegisteredDecoder {
                 hasRegisteredDecoder = false
@@ -204,8 +191,6 @@ public final class FeedPlayerPool {
             }
 
             #if canImport(UIKit)
-            playerLayer.player = nil
-            playerLayer.player = player
             if playerLayer.superlayer != nil {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
@@ -214,23 +199,42 @@ public final class FeedPlayerPool {
             }
             #endif
         }
+
+        deinit {
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+            }
+        }
     }
 
     // MARK: - Background Audio Player (CoreAudio only, 0 VideoToolbox decoders)
 
     @MainActor
     public final class BgmAudioPlayer {
-        private let player = AVQueuePlayer()
-        private var looper: AVPlayerLooper?
+        private let player = AVPlayer()
+        private var endObserver: NSObjectProtocol?
         public private(set) var currentUrl: String?
 
         public init() {
             player.automaticallyWaitsToMinimizeStalling = false
             player.actionAtItemEnd = .none
+
+            endObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self = self,
+                      let currentItem = self.player.currentItem,
+                      (notification.object as? AVPlayerItem) === currentItem else { return }
+                self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                    self?.player.play()
+                }
+            }
         }
 
         public func play(urlString: String) {
-            if currentUrl == urlString {
+            if currentUrl == urlString && player.currentItem != nil {
                 player.play()
                 return
             }
@@ -243,7 +247,8 @@ public final class FeedPlayerPool {
                 "AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders
             ])
             let item = AVPlayerItem(asset: asset)
-            looper = AVPlayerLooper(player: player, templateItem: item)
+            item.preferredForwardBufferDuration = 2.0
+            player.replaceCurrentItem(with: item)
             player.play()
         }
 
@@ -253,10 +258,14 @@ public final class FeedPlayerPool {
 
         public func stop() {
             player.pause()
-            looper?.disableLooping()
-            looper = nil
-            player.removeAllItems()
+            player.replaceCurrentItem(with: nil)
             currentUrl = nil
+        }
+
+        deinit {
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+            }
         }
     }
 

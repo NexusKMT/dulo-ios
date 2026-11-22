@@ -218,6 +218,9 @@ public final class PerformanceMonitor: ObservableObject {
                     totalCpu += Double(threadInfo.cpu_usage) / Double(TH_USAGE_SCALE) * 100.0
                 }
             }
+
+            // CRITICAL: Deallocate the Mach port Send Right to prevent kernel IPC table exhaustion!
+            mach_port_deallocate(mach_task_self_, threads[i])
         }
 
         let vmSize = vm_size_t(Int(threadCount) * MemoryLayout<thread_t>.stride)
