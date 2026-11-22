@@ -53,20 +53,6 @@ public final class FeedPlayerPool {
             player.preventsDisplaySleepDuringVideoPlayback = true
             player.actionAtItemEnd = .none
 
-            // Gapless single-item loop: keeps the existing VTDecompressionSession alive across loops
-            endObserver = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                guard let self = self,
-                      let currentItem = self.player.currentItem,
-                      (notification.object as? AVPlayerItem) === currentItem else { return }
-                self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                    self?.player.play()
-                }
-            }
-
             #if canImport(UIKit)
             let layer = AVPlayerLayer(player: player)
             layer.videoGravity = .resizeAspect
@@ -81,6 +67,20 @@ public final class FeedPlayerPool {
             ]
             self.playerLayer = layer
             #endif
+
+            // Gapless single-item loop: keeps the existing VTDecompressionSession alive across loops
+            endObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let self = self,
+                      let currentItem = self.player.currentItem,
+                      (notification.object as? AVPlayerItem) === currentItem else { return }
+                self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                    self?.player.play()
+                }
+            }
 
             let instrument = OAVTInstrument(hub: OAVTHubCore(), metricalc: OAVTMetricalcCore(), backend: OAVTBackendRemote())
             let tracker = OAVTTrackerAVPlayer(player: player)
