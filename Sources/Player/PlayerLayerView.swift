@@ -101,15 +101,61 @@ public final class PlayerLayerContainer: UIView {
     public var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     public var onReadyForDisplay: (() -> Void)?
     private var readyObserver: NSKeyValueObservation?
+    private weak var detachedPlayer: AVPlayer?
+    private var lifecycleObservers: [NSObjectProtocol] = []
 
     override public init(frame: CGRect) {
         super.init(frame: frame)
         setupLayer()
+        setupLifecycle()
     }
 
     required public init?(coder: NSCoder) {
         super.init(coder: coder)
         setupLayer()
+        setupLifecycle()
+    }
+
+    private func setupLifecycle() {
+        let o1 = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            if let p = self.playerLayer.player {
+                self.detachedPlayer = p
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.playerLayer.player = nil
+                CATransaction.commit()
+            }
+        }
+        let o2 = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            if let p = self.detachedPlayer {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.playerLayer.player = p
+                CATransaction.commit()
+                self.detachedPlayer = nil
+                if self.playerLayer.isReadyForDisplay {
+                    self.alpha = 1.0
+                }
+            }
+        }
+        lifecycleObservers = [o1, o2]
+    }
+
+    deinit {
+        for obs in lifecycleObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        readyObserver?.invalidate()
     }
 
     private func setupLayer() {

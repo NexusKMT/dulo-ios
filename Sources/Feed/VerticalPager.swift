@@ -185,13 +185,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func attachMotion(slot: FeedPlayerPool.PlayerSlot) {
-            if motionPlayerView.playerLayer.player === slot.player {
-                if motionPlayerView.playerLayer.isReadyForDisplay {
-                    motionPlayerView.alpha = 1.0
-                }
-                return
+            if motionPlayerView.playerLayer.player !== slot.player {
+                motionPlayerView.playerLayer.player = slot.player
             }
-            motionPlayerView.playerLayer.player = slot.player
             if motionPlayerView.playerLayer.isReadyForDisplay {
                 motionPlayerView.alpha = 1.0
             } else {
@@ -381,14 +377,10 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func attach(slot: FeedPlayerPool.PlayerSlot) {
             guard singlePlayerView.isHidden == false else { return }
-            if attachedSlot === slot && singlePlayerView.playerLayer.player === slot.player {
-                if singlePlayerView.playerLayer.isReadyForDisplay {
-                    singlePlayerView.alpha = 1.0
-                }
-                return
-            }
             attachedSlot = slot
-            singlePlayerView.playerLayer.player = slot.player
+            if singlePlayerView.playerLayer.player !== slot.player {
+                singlePlayerView.playerLayer.player = slot.player
+            }
             if singlePlayerView.playerLayer.isReadyForDisplay {
                 singlePlayerView.alpha = 1.0
             } else {

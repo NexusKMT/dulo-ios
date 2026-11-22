@@ -40,7 +40,7 @@ public final class FeedPlayerPool {
 
         public init(slotIndex: Int) {
             self.slotIndex = slotIndex
-            player.automaticallyWaitsToMinimizeStalling = false
+            player.automaticallyWaitsToMinimizeStalling = true
             player.preventsDisplaySleepDuringVideoPlayback = true
             player.actionAtItemEnd = .none
 
@@ -123,7 +123,7 @@ public final class FeedPlayerPool {
         }
 
         public func play() {
-            player.play()
+            player.playImmediately(atRate: 1.0)
         }
 
         public func pause() {
@@ -227,8 +227,8 @@ public final class FeedPlayerPool {
     public let standbySlot = PlayerSlot(slotIndex: 1)
     public let bgmPlayer = BgmAudioPlayer()
 
-    private weak var currentPlayingSlot: PlayerSlot?
-    private var wasPlayingBeforeBackground = false
+    public private(set) weak var currentPlayingSlot: PlayerSlot?
+    public var userPaused: Bool = false
     private var lifecycleObservers: [NSObjectProtocol] = []
 
     /// Dynamic symmetric 2-decoder allocation adhering to TikTok/Douyin Ping-Pong architecture.
@@ -254,6 +254,7 @@ public final class FeedPlayerPool {
 
     /// Guarantees strict single-playback invariant: exactly ONE audio/video source plays at any moment.
     public func play(slot: PlayerSlot) {
+        userPaused = false
         currentPlayingSlot = slot
         if slot === activeSlot {
             standbySlot.pause()
@@ -265,6 +266,7 @@ public final class FeedPlayerPool {
     }
 
     public func playBgm(urlString: String) {
+        userPaused = false
         currentPlayingSlot = nil
         activeSlot.pause()
         standbySlot.pause()
@@ -313,7 +315,6 @@ public final class FeedPlayerPool {
     }
 
     public func handleAppResignActive() {
-        wasPlayingBeforeBackground = (currentPlayingSlot?.player.timeControlStatus == .playing) || bgmPlayer.isPlaying
         activeSlot.pause()
         standbySlot.pause()
         bgmPlayer.pause()
@@ -323,19 +324,28 @@ public final class FeedPlayerPool {
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
         #endif
-        if wasPlayingBeforeBackground {
-            if let slot = currentPlayingSlot {
-                if slot.player.currentItem?.status == .failed || slot.player.error != nil {
-                    if let sId = slot.currentStreamId, let vId = slot.currentVideoId, let url = slot.currentPlayUrl {
-                        slot.prepare(streamId: sId, videoId: vId, playUrl: url, autoplay: true)
+        guard !userPaused else { return }
+
+        if let slot = currentPlayingSlot {
+            if slot.player.currentItem?.status == .failed || slot.player.error != nil {
+                if let sId = slot.currentStreamId, let vId = slot.currentVideoId, let url = slot.currentPlayUrl {
+                    slot.prepare(streamId: sId, videoId: vId, playUrl: url, autoplay: true)
+                }
+            } else {
+                let currentTime = slot.player.currentTime()
+                // If stream stalled due to socket reset during lock screen, seeking to currentTime forces
+                // AVURLAsset to issue a fresh HTTP Range request to LocalMediaProxyServer, reconnecting cleanly!
+                if slot.player.timeControlStatus != .playing {
+                    slot.player.seek(to: currentTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak slot] _ in
+                        slot?.play()
                     }
                 } else {
                     slot.play()
                 }
             }
-            if bgmPlayer.currentUrl != nil {
-                bgmPlayer.resume()
-            }
+        }
+        if bgmPlayer.currentUrl != nil {
+            bgmPlayer.resume()
         }
     }
 
