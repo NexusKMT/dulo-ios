@@ -203,7 +203,7 @@ public final class LocalMediaProxyServer {
 
         // Determine content length & type
         var meta = storage.metadata(for: cacheKey)
-        if meta == nil || meta!.contentLength <= 0 {
+        if (meta?.contentLength ?? 0) <= 0 {
             if let probe = preflightProbe(url: remoteUrl) {
                 storage.setMetadata(for: cacheKey, contentLength: probe.length, contentType: probe.type)
                 meta = storage.metadata(for: cacheKey)

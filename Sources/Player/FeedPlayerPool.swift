@@ -121,7 +121,6 @@ public final class FeedPlayerPool {
                 player.play()
             } else {
                 player.pause()
-                player.preroll(atRate: 0.0) { _ in }
             }
         }
 
