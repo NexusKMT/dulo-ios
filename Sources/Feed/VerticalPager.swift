@@ -363,6 +363,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentSlideIndex = 0
             CATransaction.begin()
             CATransaction.setDisableActions(true)
+            horizontalCollectionView.reloadData()
             horizontalCollectionView.setContentOffset(.zero, animated: false)
             horizontalCollectionView.isHidden = true
             singleCoverImageView.isHidden = false
@@ -480,8 +481,8 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.currentSlideIndex = 0
                     CATransaction.begin()
                     CATransaction.setDisableActions(true)
-                    self.horizontalCollectionView.setContentOffset(.zero, animated: false)
                     self.horizontalCollectionView.reloadData()
+                    self.horizontalCollectionView.setContentOffset(.zero, animated: false)
                     self.horizontalCollectionView.layoutIfNeeded()
                     CATransaction.commit()
                     self.isReconfiguring = false
@@ -570,6 +571,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 // 50ms momentum debounce: prevent decoder thrashing during fast flicking
                 try? await Task.sleep(nanoseconds: 50_000_000)
                 guard let self, !Task.isCancelled, self.currentSlideIndex == index else { return }
+                guard index >= 0, index < self.currentSlides.count else { return }
 
                 let indexPath = IndexPath(item: index, section: 0)
                 guard let cell = self.horizontalCollectionView.cellForItem(at: indexPath) as? GallerySlideCell else { return }
@@ -595,6 +597,9 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: GallerySlideCell.reuseId, for: indexPath) as! GallerySlideCell
+            guard indexPath.item >= 0 && indexPath.item < currentSlides.count else {
+                return cell
+            }
             cell.configure(slide: currentSlides[indexPath.item])
             return cell
         }
@@ -627,7 +632,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                 // Update sliding memory window: [k-1, k, k+1]
                 let start = max(0, newIndex - 1)
                 let end = min(currentSlideUrls.count, newIndex + 2)
-                ImagePipeline.shared.pin(urls: Array(currentSlideUrls[start..<end]))
+                if start < end && end <= currentSlideUrls.count {
+                    ImagePipeline.shared.pin(urls: Array(currentSlideUrls[start..<end]))
+                }
 
                 // Prefetch next neighbour
                 let next = newIndex + 1
@@ -672,6 +679,10 @@ struct VerticalPager: UIViewControllerRepresentable {
                 withReuseIdentifier: FeedVideoCell.reuseId,
                 for: indexPath
             ) as! FeedVideoCell
+
+            guard indexPath.item >= 0 && indexPath.item < store.items.count else {
+                return cell
+            }
 
             let item = store.items[indexPath.item]
             cell.configure(
@@ -720,8 +731,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             let topIndex = max(0, Int(floor(offsetY / pageHeight)))
             let bottomIndex = min(store.items.count - 1, Int(floor((offsetY + pageHeight - 1.0) / pageHeight)))
             var visibleIds: Set<Int64> = []
-            for i in topIndex...bottomIndex {
-                visibleIds.insert(store.items[i].streamId)
+            if topIndex <= bottomIndex && topIndex >= 0 && bottomIndex < store.items.count {
+                for i in topIndex...bottomIndex {
+                    visibleIds.insert(store.items[i].streamId)
+                }
             }
             if store.visibleStreamIds != visibleIds {
                 store.visibleStreamIds = visibleIds
@@ -802,7 +815,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         func preloadAhead(from index: Int) {
             for offset in 1...2 {
                 let target = index + offset
-                guard target < store.items.count else { continue }
+                guard target >= 0 && target < store.items.count else { continue }
                 let videoId = store.items[target].video.id
                 Task { [weak viewModel] in
                     let result = await viewModel?.resolveMedia(id: videoId, force: false)
