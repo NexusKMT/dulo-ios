@@ -5,14 +5,21 @@ import Foundation
 import UIKit
 #endif
 
-/// Industrial-grade Dual-Player Pool adhering to ByteDance (Douyin/TikTok) and Kuaishou feed engineering.
-/// Strictly caps hardware decoders to TWO instances across the entire application lifecycle.
+/// Industrial-grade Multi-Modal Player Pool adhering to ByteDance (Douyin/TikTok) and Kuaishou feed engineering.
+///
+/// Hardware Decoders Budget on Apple A9 (iPhone 6s Plus):
+/// Strictly caps hardware video decoders (VTDecompressionSession) to TWO concurrent instances:
+/// - Slot 0: Active Full-Screen Video OR Active Live Photo Motion Loop
+/// - Slot 1: Standby Prewarm Video (N+1)
+/// - BGM Audio Player: Dedicated CoreAudio background music player (0 VideoToolbox decoders)
 ///
 /// Players are allocated ONCE at startup and NEVER destroyed during scrolling.
 /// Zero mediaserverd IPC allocation churn during cell dequeue, guaranteeing 60fps locked scrolling.
 @MainActor
 public final class FeedPlayerPool {
     public static let shared = FeedPlayerPool()
+
+    // MARK: - Video Slot (Hardware VTDecompressionSession)
 
     @MainActor
     public final class PlayerSlot {
@@ -32,6 +39,7 @@ public final class FeedPlayerPool {
 
         private var openavtInstrument: OAVTInstrument?
         private var openavtTrackerId: Int?
+        private var hasRegisteredDecoder = false
 
         public init(slotIndex: Int) {
             self.slotIndex = slotIndex
@@ -65,7 +73,7 @@ public final class FeedPlayerPool {
             self.readyObserver = layer.observe(\.isReadyForDisplay, options: [.initial, .new]) { [weak self] layer, _ in
                 if layer.isReadyForDisplay {
                     Task { @MainActor in
-                        guard let self = self else { return }
+                        guard let self else { return }
                         self.isReadyForDisplay = true
                         if let vid = self.currentVideoId {
                             AVTelemetryTracker.shared.recordReadyForDisplay(for: vid)
@@ -81,6 +89,7 @@ public final class FeedPlayerPool {
             streamId: Int64,
             videoId: String,
             playUrl: String,
+            isMuted: Bool = false,
             autoplay: Bool,
             videoGravity: AVLayerVideoGravity = .resizeAspect
         ) {
@@ -92,6 +101,8 @@ public final class FeedPlayerPool {
                 CATransaction.commit()
             }
             #endif
+
+            player.isMuted = isMuted
 
             if currentStreamId == streamId && currentPlayUrl == playUrl {
                 if autoplay {
@@ -113,9 +124,28 @@ public final class FeedPlayerPool {
 
             guard let url = URL(string: playUrl) else { return }
 
-            let item = PlayerFactory.makeItem(url: url, cacheKey: videoId)
+            let playbackUrl = LocalMediaProxyServer.shared.proxyUrl(for: url, cacheKey: videoId)
+            let asset = AVURLAsset(
+                url: playbackUrl,
+                options: ["AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders]
+            )
+            let item = AVPlayerItem(asset: asset)
+            item.preferredForwardBufferDuration = 3.0
+
+            if isMuted {
+                // For Live Photo motion loops: disable all audio tracks to free CoreAudio resources
+                for track in item.tracks where track.assetTrack?.mediaType == .audio {
+                    track.isEnabled = false
+                }
+            }
+
             AVTelemetryTracker.shared.bindItem(item, for: videoId)
             self.looper = AVPlayerLooper(player: player, templateItem: item)
+
+            if !hasRegisteredDecoder {
+                hasRegisteredDecoder = true
+                AVTelemetryTracker.shared.registerActiveDecoder()
+            }
 
             if autoplay {
                 player.play()
@@ -140,6 +170,12 @@ public final class FeedPlayerPool {
             currentVideoId = nil
             currentPlayUrl = nil
             isReadyForDisplay = false
+
+            if hasRegisteredDecoder {
+                hasRegisteredDecoder = false
+                AVTelemetryTracker.shared.unregisterActiveDecoder()
+            }
+
             #if canImport(UIKit)
             if playerLayer.superlayer != nil {
                 CATransaction.begin()
@@ -151,8 +187,53 @@ public final class FeedPlayerPool {
         }
     }
 
+    // MARK: - Background Audio Player (CoreAudio only, 0 VideoToolbox decoders)
+
+    @MainActor
+    public final class BgmAudioPlayer {
+        private let player = AVQueuePlayer()
+        private var looper: AVPlayerLooper?
+        public private(set) var currentUrl: String?
+
+        public init() {
+            player.automaticallyWaitsToMinimizeStalling = false
+            player.actionAtItemEnd = .none
+        }
+
+        public func play(urlString: String) {
+            if currentUrl == urlString {
+                player.play()
+                return
+            }
+            stop()
+            guard let url = URL(string: urlString) else { return }
+            currentUrl = urlString
+
+            let playbackUrl = LocalMediaProxyServer.shared.proxyUrl(for: url)
+            let asset = AVURLAsset(url: playbackUrl, options: [
+                "AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders
+            ])
+            let item = AVPlayerItem(asset: asset)
+            looper = AVPlayerLooper(player: player, templateItem: item)
+            player.play()
+        }
+
+        public func pause() {
+            player.pause()
+        }
+
+        public func stop() {
+            player.pause()
+            looper?.disableLooping()
+            looper = nil
+            player.removeAllItems()
+            currentUrl = nil
+        }
+    }
+
     public let activeSlot = PlayerSlot(slotIndex: 0)
     public let standbySlot = PlayerSlot(slotIndex: 1)
+    public let bgmPlayer = BgmAudioPlayer()
 
     private init() {
         #if canImport(AVFAudio)
@@ -163,5 +244,6 @@ public final class FeedPlayerPool {
     public func pauseAll() {
         activeSlot.pause()
         standbySlot.pause()
+        bgmPlayer.pause()
     }
 }
