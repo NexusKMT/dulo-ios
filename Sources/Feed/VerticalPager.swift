@@ -617,7 +617,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                         videoId: item.video.id,
                         playUrl: playUrl,
                         isMuted: false,
-                        autoplay: true,
+                        autoplay: false,
                         videoGravity: gravity
                     )
                     attach(slot: slot)
@@ -643,12 +643,12 @@ struct VerticalPager: UIViewControllerRepresentable {
 
             case .gallery:
                 if isActive {
-                    // Play independent BGM
-                    if let bgm = currentBgmUrl {
-                        FeedPlayerPool.shared.playBgm(urlString: bgm)
-                    } else {
-                        FeedPlayerPool.shared.bgmPlayer.stop()
-                    }
+                    // The pool owns BGM focus. A nil URL explicitly stops any
+                    // leftover track from the previous gallery page.
+                    FeedPlayerPool.shared.activateGallery(
+                        streamId: item.streamId,
+                        bgmURL: currentBgmUrl.flatMap(URL.init(string:))
+                    )
                     // Schedule active Live Photo on current slide
                     scheduleMotionPlay(at: currentSlideIndex)
                 } else {
@@ -960,9 +960,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                 playbackStateChanged = true
             }
 
-            // Do not touch playback state on every 60/120 Hz scroll callback. A
-            // repeated play() would clear userPaused/pausedByInterruption and
-            // re-pause/re-attach layers while the same page is on screen.
+            // Do not touch playback state on every scroll callback. The reducer
+            // is idempotent for the same owner, but repeated layer reattach is
+            // still unnecessary work while the same page is on screen.
             if playbackStateChanged {
                 refreshVisibleCells()
             }
@@ -1035,7 +1035,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             let targetId = store.items[index].streamId
             if store.activeStreamId != targetId {
                 store.activeStreamId = targetId
-                PlaybackInterruptionCoordinator.shared.recordPlaybackStarted()
+                // Revoke the old owner before the new cell resolves. This
+                // closes the window where slow media resolution leaves stale
+                // gallery BGM playing under the next page.
+                FeedPlayerPool.shared.handlePageChanged()
                 let videoId = store.items[index].video.id
                 let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
                 AVTelemetryTracker.shared.recordSwipeTrigger(
