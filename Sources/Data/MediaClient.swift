@@ -21,6 +21,11 @@ struct MediaClient {
         config.timeoutIntervalForRequest = 20 // OkHttp read timeout.
         config.httpMaximumConnectionsPerHost = 10
         config.httpShouldSetCookies = false
+        // First launch may present the local-network permission alert. Without
+        // this, the request is denied immediately and the feed never loads
+        // until the user taps Retry.
+        config.waitsForConnectivity = true
+        config.timeoutIntervalForResource = 60
         self.session = URLSession(configuration: config)
     }
 

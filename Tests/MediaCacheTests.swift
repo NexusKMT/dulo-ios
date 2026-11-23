@@ -1,5 +1,5 @@
 import XCTest
-@testable import Dulo
+@testable import DuloCore
 
 final class MediaCacheTests: XCTestCase {
     func testMediaCacheKeyWithHint() {
@@ -247,4 +247,17 @@ final class MediaCacheTests: XCTestCase {
         coordinator.recordPlaybackStarted()
         XCTAssertFalse(coordinator.userPaused)
     }
+
+    func testMoovBoundaryRejectsUnrepresentable64BitSize() {
+        var header = Data()
+        var largeBoxSize: UInt32 = UInt32(1).bigEndian
+        withUnsafeBytes(of: &largeBoxSize) { header.append(contentsOf: $0) }
+        header.append("moov".data(using: .isoLatin1)!)
+        var rawSize: UInt64 = UInt64.max
+        withUnsafeBytes(of: &rawSize) { header.append(contentsOf: $0) }
+
+        // Must return nil instead of trapping in Int64(UInt64).
+        XCTAssertNil(MediaPreloadManager.parseMoovBoundary(in: header))
+    }
+
 }

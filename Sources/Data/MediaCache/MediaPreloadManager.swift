@@ -41,36 +41,61 @@ public final class MediaPreloadManager: NSObject, URLSessionDataDelegate {
     /// Parses ISO BMFF (MP4) box headers (ftyp, moov) to calculate the exact byte boundary needed to decode the video.
     /// Returns the required byte offset (moov.offset + moov.size) if moov is at the file start, or nil.
     public static func parseMoovBoundary(in data: Data) -> Int64? {
-        guard data.count >= 16 else { return nil }
+        guard data.count >= 8 else { return nil }
         var offset = 0
         let count = data.count
 
-        while offset + 8 <= count {
-            let boxSize32 = data.subdata(in: offset..<offset+4).withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
-            let boxType = String(data: data.subdata(in: offset+4..<offset+8), encoding: .isoLatin1) ?? ""
+        while offset >= 0, offset + 8 <= count {
+            guard let boxSize32 = readUInt32BE(data, at: offset),
+                  let rawBoxType = readBytes(data, at: offset + 4, count: 4) else { break }
+            let boxType = String(data: rawBoxType, encoding: .isoLatin1) ?? ""
 
             var boxSize = Int64(boxSize32)
             if boxSize32 == 1 {
-                // 64-bit large box
-                guard offset + 16 <= count else { break }
-                boxSize = Int64(data.subdata(in: offset+8..<offset+16).withUnsafeBytes { $0.load(as: UInt64.self).bigEndian })
+                // 64-bit largesize. Reject values that cannot be represented by Int64
+                // instead of trapping in Int64(UInt64).
+                guard offset + 16 <= count,
+                      let rawSize = readUInt64BE(data, at: offset + 8),
+                      rawSize <= UInt64(Int64.max) else { return nil }
+                boxSize = Int64(rawSize)
             } else if boxSize32 == 0 {
-                // Box extends to EOF
+                // Box extends to EOF; the caller only has a header prefix, so stop.
                 break
             }
+
+            guard boxSize > 0, boxSize <= 500 * 1024 * 1024 else { break }
 
             if boxType == "moov" {
-                // moov box spans from offset to offset + boxSize
-                return Int64(offset) + boxSize
+                let (end, overflow) = Int64(offset).addingReportingOverflow(boxSize)
+                return overflow ? nil : end
             } else if boxType == "mdat" {
-                // mdat encountered before moov -> moov is located at EOF
+                // mdat encountered before moov -> moov is located at EOF.
                 break
             }
 
-            if boxSize <= 0 || boxSize > 500 * 1024 * 1024 { break }
+            guard boxSize <= Int64(Int.max) else { return nil }
             offset += Int(boxSize)
         }
         return nil
+    }
+
+    private static func readBytes(_ data: Data, at offset: Int, count: Int) -> Data? {
+        guard offset >= 0, count >= 0, offset + count <= data.count else { return nil }
+        return data.subdata(in: offset..<offset + count)
+    }
+
+    private static func readUInt32BE(_ data: Data, at offset: Int) -> UInt32? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        return data.withUnsafeBytes { buffer in
+            buffer.loadUnaligned(fromByteOffset: offset, as: UInt32.self).bigEndian
+        }
+    }
+
+    private static func readUInt64BE(_ data: Data, at offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 8 <= data.count else { return nil }
+        return data.withUnsafeBytes { buffer in
+            buffer.loadUnaligned(fromByteOffset: offset, as: UInt64.self).bigEndian
+        }
     }
 
     /// Preloads up to `targetSize` bytes (default 800KB) of the specified video/motion URL directly to disk.

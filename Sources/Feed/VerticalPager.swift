@@ -247,6 +247,13 @@ struct VerticalPager: UIViewControllerRepresentable {
         private var currentTask: Task<Void, Never>?
         private var motionDebounceTask: Task<Void, Never>?
         private weak var attachedSlot: FeedPlayerPool.PlayerSlot?
+        private var currentViewModel: FeedViewModel?
+        private var currentStore: FeedStreamStore?
+        private var leaseRenewalTask: Task<Void, Never>?
+        private var itemStatusObservation: NSKeyValueObservation?
+        private var itemFailureObserver: NSObjectProtocol?
+        private weak var observedItem: AVPlayerItem?
+        private var isRecoveringLease = false
 
         private var currentSlides: [GallerySlide] = []
         private var currentSlideUrls: [URL] = []
@@ -342,6 +349,12 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentTask = nil
             motionDebounceTask?.cancel()
             motionDebounceTask = nil
+            leaseRenewalTask?.cancel()
+            leaseRenewalTask = nil
+            clearItemObservers()
+            currentViewModel = nil
+            currentStore = nil
+            isRecoveringLease = false
 
             if !currentSlideUrls.isEmpty {
                 ImagePipeline.shared.unpin(urls: currentSlideUrls)
@@ -370,6 +383,7 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func detachPlayer() {
             attachedSlot = nil
+            clearItemObservers()
             singlePlayerView.resetDetachedPlayer()
             singlePlayerView.playerLayer.player = nil
             singlePlayerView.alpha = 0.0
@@ -379,6 +393,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         func attach(slot: FeedPlayerPool.PlayerSlot) {
             guard singlePlayerView.isHidden == false else { return }
             attachedSlot = slot
+            observeItemStatus(slot.player.currentItem, videoId: currentItem?.video.id)
             if singlePlayerView.playerLayer.player !== slot.player {
                 singlePlayerView.playerLayer.player = slot.player
             }
@@ -404,6 +419,12 @@ struct VerticalPager: UIViewControllerRepresentable {
             store: FeedStreamStore
         ) {
             currentItem = item
+            currentViewModel = viewModel
+            currentStore = store
+            leaseRenewalTask?.cancel()
+            leaseRenewalTask = nil
+            clearItemObservers()
+            isRecoveringLease = false
             let streamId = item.streamId
             let video = item.video
 
@@ -440,15 +461,22 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.singlePlayerView.isHidden = false
                     self.horizontalCollectionView?.reloadData()
 
+                    // Start playback first; the cover sits below the player layer and
+                    // must never delay the first video frame on a slow image CDN.
+                    self.refreshPlayback(store: store, gravity: .resizeAspect)
+                    self.scheduleLeaseRenewal(videoId: video.id, lease: lease)
+
                     if let coverStr, let coverUrl = URL(string: coverStr), self.singleCoverImageView.image == nil {
                         if let cached = ImagePipeline.shared.cachedImage(for: coverUrl) {
                             self.singleCoverImageView.image = cached
                         } else {
-                            self.singleCoverImageView.image = await ImagePipeline.shared.loadImage(for: coverUrl)
+                            Task { @MainActor [weak self] in
+                                let image = await ImagePipeline.shared.loadImage(for: coverUrl)
+                                guard let self, self.currentItem?.streamId == streamId else { return }
+                                self.singleCoverImageView.image = image
+                            }
                         }
                     }
-
-                    self.refreshPlayback(store: store, gravity: .resizeAspect)
 
                 case .images(let urls, let music, let slides):
                     let effectiveSlides = slides.isEmpty ? urls.enumerated().map { GallerySlide(id: "\(video.id)_\($0)", imageUrl: $1) } : slides
@@ -481,6 +509,97 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
         }
 
+        private func scheduleLeaseRenewal(videoId: String, lease: Lease<ResolvedMedia>) {
+            leaseRenewalTask?.cancel()
+            let seconds = max(5, lease.expiresAt.timeIntervalSinceNow - Lease<ResolvedMedia>.defaultRenewalMargin)
+            let nanos = UInt64(min(seconds, 3600) * 1_000_000_000)
+            leaseRenewalTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: nanos)
+                guard !Task.isCancelled,
+                      let self,
+                      let viewModel = self.currentViewModel,
+                      self.currentItem?.video.id == videoId else { return }
+
+                // Refresh the view model's lease before the current signed URL
+                // expires. Do not replace a healthy player item: that would reset
+                // playback position. A failed item is handled separately below.
+                let result = await viewModel.resolveMedia(id: videoId, force: true)
+                guard !Task.isCancelled, self.currentItem?.video.id == videoId else { return }
+                if case .ready(let renewed) = result {
+                    self.scheduleLeaseRenewal(videoId: videoId, lease: renewed)
+                }
+            }
+        }
+
+        private func observeItemStatus(_ item: AVPlayerItem?, videoId: String?) {
+            guard let item, let videoId else {
+                clearItemObservers()
+                return
+            }
+            if observedItem === item { return }
+            clearItemObservers()
+            observedItem = item
+            itemStatusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
+                guard item.status == .failed else { return }
+                Task { @MainActor [weak self] in
+                    self?.handlePlaybackFailure(item: item, videoId: videoId)
+                }
+            }
+            itemFailureObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemFailedToPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.handlePlaybackFailure(item: item, videoId: videoId)
+                }
+            }
+        }
+
+        private func clearItemObservers() {
+            itemStatusObservation?.invalidate()
+            itemStatusObservation = nil
+            if let itemFailureObserver {
+                NotificationCenter.default.removeObserver(itemFailureObserver)
+                self.itemFailureObserver = nil
+            }
+            observedItem = nil
+        }
+
+        private func handlePlaybackFailure(item: AVPlayerItem, videoId: String) {
+            guard !isRecoveringLease,
+                  observedItem === item,
+                  currentItem?.video.id == videoId,
+                  let viewModel = currentViewModel,
+                  let store = currentStore else { return }
+            isRecoveringLease = true
+            itemStatusObservation?.invalidate()
+            itemStatusObservation = nil
+
+            Task { @MainActor [weak self] in
+                defer { self?.isRecoveringLease = false }
+                let result = await viewModel.resolveMedia(id: videoId, force: true)
+                guard let self,
+                      !Task.isCancelled,
+                      self.currentItem?.video.id == videoId else { return }
+
+                switch result {
+                case .ready(let lease):
+                    if case .video(let playUrl, _, _, _) = lease.value {
+                        self.resolvedPlayUrl = playUrl
+                        self.cellMode = .video(playUrl: playUrl)
+                        self.refreshPlayback(store: store)
+                        self.scheduleLeaseRenewal(videoId: videoId, lease: lease)
+                    }
+                case .notFound:
+                    // Skip is owned by the pager; leave the cover visible rather
+                    // than retrying the same dead URL forever.
+                    self.singlePlayerView.alpha = 0.0
+                default:
+                    break
+                }
+            }
+        }
         func refreshPlayback(store: FeedStreamStore, gravity: AVLayerVideoGravity = .resizeAspect) {
             guard let item = currentItem else { return }
             let isActive = (store.activeStreamId == item.streamId)
@@ -810,8 +929,10 @@ struct VerticalPager: UIViewControllerRepresentable {
                     visibleIds.insert(store.items[i].streamId)
                 }
             }
+            var playbackStateChanged = false
             if store.visibleStreamIds != visibleIds {
                 store.visibleStreamIds = visibleIds
+                playbackStateChanged = true
             }
 
             // 2. Prewarm upcoming cell (paused first frame for zero black flash)
@@ -836,9 +957,15 @@ struct VerticalPager: UIViewControllerRepresentable {
 
             if store.prewarmStreamId != secondaryId {
                 store.prewarmStreamId = secondaryId
+                playbackStateChanged = true
             }
 
-            refreshVisibleCells()
+            // Do not touch playback state on every 60/120 Hz scroll callback. A
+            // repeated play() would clear userPaused/pausedByInterruption and
+            // re-pause/re-attach layers while the same page is on screen.
+            if playbackStateChanged {
+                refreshVisibleCells()
+            }
         }
 
         func scrollViewWillEndDragging(
@@ -908,6 +1035,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             let targetId = store.items[index].streamId
             if store.activeStreamId != targetId {
                 store.activeStreamId = targetId
+                PlaybackInterruptionCoordinator.shared.recordPlaybackStarted()
                 let videoId = store.items[index].video.id
                 let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
                 AVTelemetryTracker.shared.recordSwipeTrigger(

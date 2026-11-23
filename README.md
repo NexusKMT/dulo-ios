@@ -4,10 +4,10 @@ SwiftUI 全量重写的 Dulo iOS 客户端（Android 版：`dev.dulo.player`）�
 
 ## 架构
 
-- `Sources/Data` — 清单/lease 数据层（对应 Android 同名 Kotlin 包）：`/manifest.json` 身份列表、`/resolve/{id}` 按需铸造播放 URL，客户端 LRU lease 缓存 + 60s 提前续期。
-- `Sources/Feed` — 流存储、乱序队列、`UIPageViewController` 垂直分页（SwiftUI 无 iOS 16 垂直 paging，滚动吸附行为用 UIKit 分页器）、页面（每页一个 AVPlayer，预加载邻居页，403 → `?force=1` 续租，失败自动跳过）。
-- `Sources/Player` — AVURLAsset 注入抖音要求的浏览器 UA + Referer；403 检测走一次 Range 预检请求（AVFoundation 错误里不暴露 HTTP 状态码）。
-- 服务器地址内化在代码里（`AppSettings.serverBaseUrl` = `http://192.168.2.3:8080`），无设置界面。左上角 80pt 双击退出。
+- `Sources/Data` — 清单/lease 数据层（对应 Android 同名 Kotlin 包）：`/manifest.json` 身份列表、`/resolve/{id}` 按需铸造播放 URL；确定性 LRU lease 缓存，播放页在过期前 60s 尝试续期。
+- `Sources/Feed` — 流存储、乱序队列、`UICollectionView` 垂直分页；每页使用 player pool 的 AVPlayer，预加载邻居页。播放 item 失败时以 `?force=1` 重新 resolve，并用新 URL 重建 item。
+- `Sources/Player` — 播放 URL 统一经过本地 HTTP 代理；UA/Referer 由代理注入上游 CDN，不依赖 AVURLAsset 的非公开 header 选项。
+- 服务器地址内化在代码里（`AppSettings.serverBaseUrl` = `http://192.168.2.3:8080`），无设置界面；没有隐藏退出手势。
 
 ## 构建（GitHub Actions）
 

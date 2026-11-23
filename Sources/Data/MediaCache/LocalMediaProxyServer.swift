@@ -18,6 +18,8 @@ public final class LocalMediaProxyServer {
     public private(set) var port: UInt16 = 0
     private var serverFd: Int32 = -1
     public private(set) var isRunning = false
+    private var generation: Int = 0
+    private let accessToken = UUID().uuidString
     private let acceptQueue = DispatchQueue(label: "dev.dulo.localMediaProxy.accept", qos: .userInitiated)
     private let clientQueue = DispatchQueue(label: "dev.dulo.localMediaProxy.client", qos: .userInitiated, attributes: .concurrent)
 
@@ -109,7 +111,11 @@ public final class LocalMediaProxyServer {
 
     public func stop() {
         isRunning = false
+        generation &+= 1
         if serverFd >= 0 {
+            // Wake the blocked accept() before closing so the old loop cannot
+            // observe a reused fd from a subsequent start().
+            shutdown(serverFd, SHUT_RDWR)
             close(serverFd)
             serverFd = -1
         }
@@ -118,6 +124,8 @@ public final class LocalMediaProxyServer {
     /// Starts the loopback proxy server on an OS-assigned ephemeral port or preferred port.
     public func start(preferredPort: UInt16? = nil) {
         guard !isRunning || !isHealthy() else { return }
+        generation &+= 1
+        let loopGeneration = generation
 
         // Clean up previous dead socket if any
         if serverFd >= 0 {
@@ -183,7 +191,7 @@ public final class LocalMediaProxyServer {
         NSLog("[LocalMediaProxyServer] Started listening on http://127.0.0.1:%d", port)
 
         acceptQueue.async { [weak self] in
-            self?.runAcceptLoop(serverFd: fd)
+            self?.runAcceptLoop(serverFd: fd, generation: loopGeneration)
         }
     }
 
@@ -213,7 +221,8 @@ public final class LocalMediaProxyServer {
         comps.path = "/stream"
         comps.queryItems = [
             URLQueryItem(name: "u", value: base64Url),
-            URLQueryItem(name: "k", value: key)
+            URLQueryItem(name: "k", value: key),
+            URLQueryItem(name: "t", value: accessToken)
         ]
 
         return comps.url ?? remoteUrl
@@ -221,8 +230,10 @@ public final class LocalMediaProxyServer {
 
     // MARK: - Socket Accept Loop
 
-    private func runAcceptLoop(serverFd: Int32) {
-        while isRunning {
+    private func runAcceptLoop(serverFd: Int32, generation loopGeneration: Int) {
+        while isRunning,
+              loopGeneration == generation,
+              serverFd == self.serverFd {
             var clientAddr = sockaddr_in()
             var clientLen = socklen_t(MemoryLayout<sockaddr_in>.size)
             let clientFd = withUnsafeMutablePointer(to: &clientAddr) { ptr in
@@ -232,7 +243,11 @@ public final class LocalMediaProxyServer {
             }
 
             guard clientFd >= 0 else {
-                if !isRunning { break }
+                // A stop/start cycle bumps the generation and closes this fd.
+                // Never continue accepting on a stale or reused descriptor.
+                guard isRunning,
+                      loopGeneration == generation,
+                      serverFd == self.serverFd else { break }
                 let err = errno
                 if err == EBADF || err == EINVAL || err == ENOTSOCK {
                     NSLog("[LocalMediaProxyServer] Listening socket invalid (%d), breaking accept loop", err)
@@ -274,10 +289,16 @@ public final class LocalMediaProxyServer {
         defer { close(clientFd) }
 
         var buffer = [UInt8](repeating: 0, count: 4096)
-        let bytesRead = recv(clientFd, &buffer, buffer.count - 1, 0)
-        guard bytesRead > 0 else { return }
-
-        guard let requestString = String(bytes: buffer[0..<bytesRead], encoding: .utf8) else { return }
+        var requestData = Data()
+        let headerTerminator = Data("\r\n\r\n".utf8)
+        while requestData.count < 16 * 1024 {
+            let bytesRead = recv(clientFd, &buffer, buffer.count, 0)
+            if bytesRead <= 0 { break }
+            requestData.append(contentsOf: buffer[0..<bytesRead])
+            if requestData.range(of: headerTerminator) != nil { break }
+        }
+        guard !requestData.isEmpty,
+              let requestString = String(data: requestData, encoding: .utf8) else { return }
         let lines = requestString.components(separatedBy: "\r\n")
         guard let firstLine = lines.first else { return }
         let parts = firstLine.components(separatedBy: " ")
@@ -285,6 +306,12 @@ public final class LocalMediaProxyServer {
         let pathWithQuery = parts[1]
 
         guard let comps = URLComponents(string: "http://127.0.0.1\(pathWithQuery)") else { return }
+        guard comps.queryItems?.first(where: { $0.name == "t" })?.value == accessToken else {
+            // Reject requests that did not originate from proxyUrl(). This is not
+            // authentication, but it prevents unrelated local processes from
+            // using Dulo as an open URL proxy by guessing the loopback port.
+            return
+        }
         guard let encodedUrl = comps.queryItems?.first(where: { $0.name == "u" })?.value else { return }
 
         var base64 = encodedUrl
@@ -294,7 +321,9 @@ public final class LocalMediaProxyServer {
 
         guard let rawUrlData = Data(base64Encoded: base64),
               let rawUrlString = String(data: rawUrlData, encoding: .utf8),
-              let remoteUrl = URL(string: rawUrlString) else {
+              let remoteUrl = URL(string: rawUrlString),
+              let scheme = remoteUrl.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
             return
         }
 
@@ -482,7 +511,7 @@ public final class LocalMediaProxyServer {
         var lastActivityTime = Date().timeIntervalSince1970
 
         var streamingTask: URLSessionDataTask?
-        let streamer = ChunkStreamer { [weak self] chunk in
+        let streamer = ChunkStreamer(expectedStart: start) { [weak self] chunk in
             guard let self, clientAlive else { return false }
             lastActivityTime = Date().timeIntervalSince1970
             if self.sendData(clientFd, chunk) {
@@ -526,6 +555,9 @@ public final class LocalMediaProxyServer {
 
         customSession.invalidateAndCancel()
         storage.flushMetadata(for: cacheKey)
+        if streamer.rejected {
+            NSLog("[LocalMediaProxyServer] Upstream ignored or mismatched Range for %@ (wanted %lld)", cacheKey, start)
+        }
     }
 
     // MARK: - Preflight Probing
@@ -537,32 +569,31 @@ public final class LocalMediaProxyServer {
         request.setValue("bytes=0-1", forHTTPHeaderField: "Range")
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result: (length: Int64, type: String)?
-
-        let task = URLSession.shared.dataTask(with: request) { _, response, _ in
-            defer { semaphore.signal() }
-            guard let http = response as? HTTPURLResponse else { return }
-
-            let type = http.value(forHTTPHeaderField: "Content-Type") ?? "video/mp4"
-            if let cr = http.value(forHTTPHeaderField: "Content-Range"),
-               let slashIdx = cr.lastIndex(of: "/") {
-                let totalStr = cr[cr.index(after: slashIdx)...].trimmingCharacters(in: .whitespaces)
-                if let total = Int64(totalStr) {
-                    result = (total, type)
-                    return
-                }
-            }
-            if let cl = http.value(forHTTPHeaderField: "Content-Length"), let total = Int64(cl) {
-                result = (total, type)
-            }
-        }
+        let probe = ResponseProbe(semaphore: semaphore)
+        let session = URLSession(configuration: .ephemeral, delegate: probe, delegateQueue: nil)
+        let task = session.dataTask(with: request)
         task.resume()
 
-        let waitResult = semaphore.wait(timeout: .now() + 8.0)
-        if waitResult == .timedOut {
+        // The delegate cancels the task as soon as response headers arrive, so a
+        // server that ignores Range cannot buffer the entire video into memory.
+        if semaphore.wait(timeout: .now() + 8.0) == .timedOut {
             task.cancel()
         }
-        return result
+        session.invalidateAndCancel()
+
+        guard let http = probe.response else { return nil }
+        let type = http.value(forHTTPHeaderField: "Content-Type") ?? "video/mp4"
+        if let cr = http.value(forHTTPHeaderField: "Content-Range"),
+           let slashIdx = cr.lastIndex(of: "/") {
+            let totalStr = cr[cr.index(after: slashIdx)...].trimmingCharacters(in: .whitespaces)
+            if let total = Int64(totalStr) {
+                return (total, type)
+            }
+        }
+        if let cl = http.value(forHTTPHeaderField: "Content-Length"), let total = Int64(cl) {
+            return (total, type)
+        }
+        return nil
     }
 
     // MARK: - Socket Helpers
@@ -627,16 +658,91 @@ public final class LocalMediaProxyServer {
 
 // MARK: - Streaming URLSession Delegate
 
+private final class ResponseProbe: NSObject, URLSessionDataDelegate {
+    let semaphore: DispatchSemaphore
+    private let lock = NSLock()
+    private var signaled = false
+    private(set) var response: HTTPURLResponse?
+
+    init(semaphore: DispatchSemaphore) {
+        self.semaphore = semaphore
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        self.response = response as? HTTPURLResponse
+        completionHandler(.cancel)
+        signal()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        signal()
+    }
+
+    private func signal() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !signaled else { return }
+        signaled = true
+        semaphore.signal()
+    }
+}
+
 private final class ChunkStreamer: NSObject, URLSessionDataDelegate {
+    private let expectedStart: Int64
     private let onChunk: (Data) -> Bool
     private let onComplete: () -> Void
+    private let lock = NSLock()
+    private var finished = false
+    private(set) var rejected = false
 
-    init(onChunk: @escaping (Data) -> Bool, onComplete: @escaping () -> Void) {
+    init(
+        expectedStart: Int64,
+        onChunk: @escaping (Data) -> Bool,
+        onComplete: @escaping () -> Void
+    ) {
+        self.expectedStart = expectedStart
         self.onChunk = onChunk
         self.onComplete = onComplete
     }
 
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let http = response as? HTTPURLResponse else {
+            reject(completionHandler)
+            return
+        }
+
+        let rangeStart = http.value(forHTTPHeaderField: "Content-Range")
+            .flatMap(Self.rangeStart)
+
+        switch http.statusCode {
+        case 206 where rangeStart == expectedStart:
+            completionHandler(.allow)
+        case 200 where expectedStart == 0:
+            // A 200 is valid only for a request from byte zero. Any other
+            // start means the upstream ignored Range and the bytes would be
+            // written to the wrong cache offset.
+            completionHandler(.allow)
+        default:
+            reject(completionHandler)
+        }
+    }
+
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        let blocked = rejected || finished
+        lock.unlock()
+        guard !blocked else { return }
+
         let shouldContinue = onChunk(data)
         if !shouldContinue {
             dataTask.cancel()
@@ -644,6 +750,33 @@ private final class ChunkStreamer: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        finish()
+    }
+
+    private func reject(_ completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        rejected = true
+        lock.unlock()
+        completionHandler(.cancel)
+        finish()
+    }
+
+    private func finish() {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        lock.unlock()
         onComplete()
+    }
+
+    private static func rangeStart(_ header: String) -> Int64? {
+        // Expected form: "bytes 123-456/789".
+        guard header.lowercased().hasPrefix("bytes ") else { return nil }
+        let body = header.dropFirst("bytes ".count)
+        guard let dash = body.firstIndex(of: "-") else { return nil }
+        return Int64(body[..<dash].trimmingCharacters(in: .whitespaces))
     }
 }

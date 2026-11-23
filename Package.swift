@@ -1,5 +1,5 @@
 // swift-tools-version:5.9
-// Local fast loop: `swift test` with CommandLineTools, no Xcode required.
+// Local build loop for DuloCore; XCTest tests run through the Xcode project/CI.
 // CI runs the same tests on an iOS simulator via the XcodeGen project.
 import PackageDescription
 

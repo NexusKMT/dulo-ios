@@ -1,5 +1,5 @@
 import XCTest
-@testable import Dulo
+@testable import DuloCore
 
 final class LeaseTests: XCTestCase {
     func testFreshOutsideMargin() {

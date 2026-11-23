@@ -41,7 +41,6 @@ targets:
         NSLocalNetworkUsageDescription: Dulo 需要访问局域网内的媒体服务器以加载视频。
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-          NSAllowsArbitraryLoads: true
   DuloTests:
     type: bundle.unit-test
     platform: iOS
