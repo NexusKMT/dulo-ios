@@ -91,7 +91,7 @@ private struct FeedDebugHUD: View {
         if let video = store.items.first(where: { $0.streamId == store.activeStreamId })?.video {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Text("\(AppVersion.displayString) · \(ExperimentVariant.current.rawValue)")
+                    Text("\(AppVersion.displayString) · \(ExperimentVariant.current.rawValue) · L\(ExperimentVariant.launchSeq)")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.75))
                         .padding(.horizontal, 4)

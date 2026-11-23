@@ -9,32 +9,8 @@ on:
 
 jobs:
   build:
-    # Only experiment/* branches produce all three arms. Normal PRs and main
-    # pushes build the control arm once, so the matrix does not become a
-    # permanent 3x cost.
-    name: build-${{ matrix.variant }}
+    name: build-sticky-runtime
     runs-on: macos-15
-    env:
-      IS_EXPERIMENT: ${{ startsWith(github.head_ref, 'experiment/') || startsWith(github.ref_name, 'experiment/') }}
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        include:
-          # Same commit, three arms. Build number is the primary discriminator;
-          # every telemetry event also carries experiment_variant.
-          - variant: control
-            build: "32"
-            condition: ""
-            run_tests: true
-          - variant: prewarm
-            build: "33"
-            condition: "DULO_EXPERIMENT_PREWARM"
-            run_tests: false
-          - variant: audio
-            build: "34"
-            condition: "DULO_EXPERIMENT_AUDIO"
-            run_tests: false
     steps:
       - uses: actions/checkout@v7
 
@@ -46,29 +22,23 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           BASE_BUILD=$(git show "origin/$BASE_REF:project.yml" | awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}')
           HEAD_BUILD=$(awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}' project.yml)
-          echo "main build: $BASE_BUILD; PR build: $HEAD_BUILD"
+          echo "base build: $BASE_BUILD; PR build: $HEAD_BUILD"
           if [ -z "$BASE_BUILD" ] || [ -z "$HEAD_BUILD" ]; then
             echo "::error::Could not read CURRENT_PROJECT_VERSION from project.yml"
             exit 1
           fi
           if [ "$HEAD_BUILD" -le "$BASE_BUILD" ]; then
-            echo "::error::CURRENT_PROJECT_VERSION must be incremented for every change (main=$BASE_BUILD, PR=$HEAD_BUILD)"
+            echo "::error::CURRENT_PROJECT_VERSION must be incremented for every change (base=$BASE_BUILD, PR=$HEAD_BUILD)"
             exit 1
           fi
 
       - name: Install XcodeGen
-        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         run: brew install xcodegen
 
       - name: Generate Xcode project
-        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         run: xcodegen generate
 
-      - name: Unit tests (control arm)
-        if: ${{ matrix.run_tests }}
-        env:
-          VARIANT_CONDITION: ${{ matrix.condition }}
-          BUILD_NUMBER: ${{ matrix.build }}
+      - name: Unit tests
         run: |
           DEVICE_ID=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
           if [ -n "$DEVICE_ID" ]; then
@@ -76,43 +46,29 @@ jobs:
           else
             DEST="platform=iOS Simulator,name=iPhone 16"
           fi
-          SETTINGS=(CURRENT_PROJECT_VERSION="$BUILD_NUMBER")
-          if [ -n "$VARIANT_CONDITION" ]; then
-            SETTINGS+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS="$VARIANT_CONDITION")
-          fi
           echo "Testing on destination: $DEST"
           xcodebuild test -project Dulo.xcodeproj -scheme Dulo \
             -destination "$DEST" \
-            CODE_SIGNING_ALLOWED=NO \
-            "${SETTINGS[@]}"
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Archive (unsigned; TrollStore signs on install)
-        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
-        env:
-          VARIANT_CONDITION: ${{ matrix.condition }}
-          BUILD_NUMBER: ${{ matrix.build }}
         run: |
-          SETTINGS=(CURRENT_PROJECT_VERSION="$BUILD_NUMBER")
-          if [ -n "$VARIANT_CONDITION" ]; then
-            SETTINGS+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS="$VARIANT_CONDITION")
-          fi
           xcodebuild archive -project Dulo.xcodeproj -scheme Dulo \
             -destination 'generic/platform=iOS' \
-            -archivePath "build/Dulo-${{ matrix.variant }}.xcarchive" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            "${SETTINGS[@]}"
+            -archivePath "build/Dulo-sticky.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
       - name: Package IPA
-        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         run: |
+          BUILD=$(awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}' project.yml)
           mkdir -p Payload
-          cp -R "build/Dulo-${{ matrix.variant }}.xcarchive/Products/Applications/Dulo.app" Payload/
-          zip -r -X "Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}.ipa" Payload
+          cp -R "build/Dulo-sticky.xcarchive/Products/Applications/Dulo.app" Payload/
+          zip -r -X "Dulo-0.2.1-${BUILD}-sticky.ipa" Payload
+          echo "BUILD=${BUILD}" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v7
-        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         with:
-          name: Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}
-          path: Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}.ipa
+          name: Dulo-0.2.1-${{ env.BUILD }}-sticky
+          path: Dulo-0.2.1-${{ env.BUILD }}-sticky.ipa
           if-no-files-found: error
           retention-days: 14
