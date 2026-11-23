@@ -173,16 +173,20 @@ public final class FeedPlayerPool {
                 object: nil,
                 queue: .main
             ) { [weak self] notification in
-                guard let self = self,
-                      let currentItem = self.player.currentItem,
-                      (notification.object as? AVPlayerItem) === currentItem else { return }
-                guard self.shouldLoop?() == true,
-                      self.player.timeControlStatus != .paused else { return }
-                self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                MainActor.assumeIsolated {
                     guard let self = self,
-                          self.shouldLoop?() == true,
+                          let currentItem = self.player.currentItem,
+                          (notification.object as? AVPlayerItem) === currentItem else { return }
+                    guard self.shouldLoop?() == true,
                           self.player.timeControlStatus != .paused else { return }
-                    self.player.play()
+                    self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                        MainActor.assumeIsolated {
+                            guard let self = self,
+                                  self.shouldLoop?() == true,
+                                  self.player.timeControlStatus != .paused else { return }
+                            self.player.play()
+                        }
+                    }
                 }
             }
         }
@@ -420,11 +424,13 @@ public final class FeedPlayerPool {
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
             ) { [weak self, weak slot] _ in
-                guard let self,
-                      let slot,
-                      self.audioFocus.shouldPlay,
-                      self.audioFocus.owner == .video(streamId: streamId) else { return }
-                slot.play()
+                MainActor.assumeIsolated {
+                    guard let self,
+                          let slot,
+                          self.audioFocus.shouldPlay,
+                          self.audioFocus.owner == .video(streamId: streamId) else { return }
+                    slot.play()
+                }
             }
         } else if autoplay {
             slot.play()

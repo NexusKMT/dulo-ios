@@ -62,7 +62,9 @@ public final class PlaybackInterruptionCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleAppResignActive()
+            MainActor.assumeIsolated {
+                self?.handleAppResignActive()
+            }
         }
 
         let o2 = NotificationCenter.default.addObserver(
@@ -70,7 +72,9 @@ public final class PlaybackInterruptionCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.handleAppBecomeActive()
+            MainActor.assumeIsolated {
+                self?.handleAppBecomeActive()
+            }
         }
         observers.append(contentsOf: [o1, o2])
         #endif
@@ -81,7 +85,9 @@ public final class PlaybackInterruptionCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            self?.handleAudioInterruption(notification: notification)
+            MainActor.assumeIsolated {
+                self?.handleAudioInterruption(notification: notification)
+            }
         }
 
         let o4 = NotificationCenter.default.addObserver(
@@ -89,7 +95,9 @@ public final class PlaybackInterruptionCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            self?.handleAudioRouteChange(notification: notification)
+            MainActor.assumeIsolated {
+                self?.handleAudioRouteChange(notification: notification)
+            }
         }
         observers.append(contentsOf: [o3, o4])
         #endif
