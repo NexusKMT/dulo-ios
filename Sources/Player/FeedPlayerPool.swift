@@ -265,6 +265,12 @@ public final class FeedPlayerPool {
     public func play(slot: PlayerSlot) {
         let coordinator = PlaybackInterruptionCoordinator.shared
         guard !coordinator.userPaused, !coordinator.pausedByInterruption else { return }
+
+        // A video taking audio focus revokes any gallery BGM ownership. Pausing
+        // alone leaves `currentUrl` behind, and wake-from-lock would resume that
+        // stale gallery track underneath the current video.
+        bgmPlayer.stop()
+
         if currentPlayingSlot === slot,
            slot.player.timeControlStatus == .playing {
             return
@@ -276,7 +282,6 @@ public final class FeedPlayerPool {
         } else {
             activeSlot.pause()
         }
-        bgmPlayer.pause()
         slot.play()
     }
 
@@ -319,6 +324,13 @@ public final class FeedPlayerPool {
 
     public func handleAppBecomeActive() {
         LocalMediaProxyServer.shared.ensureRunning()
+
+        // Audio focus is exclusive. If a video is the current owner, drop any
+        // gallery BGM left over from a previous page before resuming video.
+        if currentPlayingSlot != nil {
+            bgmPlayer.stop()
+        }
+
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
         if currentPlayingSlot != nil || bgmPlayer.currentUrl != nil {
@@ -353,7 +365,7 @@ public final class FeedPlayerPool {
             }
         }
 
-        if bgmPlayer.currentUrl != nil {
+        if currentPlayingSlot == nil, bgmPlayer.currentUrl != nil {
             bgmPlayer.resume()
         }
     }
