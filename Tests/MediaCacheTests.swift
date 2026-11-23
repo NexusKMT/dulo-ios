@@ -218,7 +218,9 @@ final class MediaCacheTests: XCTestCase {
     @MainActor
     func testPlaybackInterruptionCoordinatorIntentStateMachine() {
         let coordinator = PlaybackInterruptionCoordinator.shared
-        coordinator.recordPlaybackStarted()
+        FeedPlayerPool.shared.resetAudioFocusForTesting()
+        defer { FeedPlayerPool.shared.resetAudioFocusForTesting() }
+
         XCTAssertFalse(coordinator.userPaused)
         XCTAssertFalse(coordinator.pausedByInterruption)
         XCTAssertFalse(coordinator.shouldResumeOnActive)
@@ -229,7 +231,7 @@ final class MediaCacheTests: XCTestCase {
         XCTAssertTrue(coordinator.pausedByInterruption)
         XCTAssertTrue(coordinator.shouldResumeOnActive)
 
-        // Return to active -> auto resume
+        // Return to active -> the scene pause reason is removed
         coordinator.handleAppBecomeActive()
         XCTAssertFalse(coordinator.pausedByInterruption)
 
@@ -248,8 +250,8 @@ final class MediaCacheTests: XCTestCase {
         coordinator.handleAppBecomeActive()
         XCTAssertTrue(coordinator.userPaused)
 
-        // Normal feed scroll reset
-        coordinator.recordPlaybackStarted()
+        // An explicit user play is required to clear user intent.
+        coordinator.setUserPaused(false)
         XCTAssertFalse(coordinator.userPaused)
     }
 

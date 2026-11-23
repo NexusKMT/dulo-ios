@@ -9,23 +9,27 @@ import AVFAudio
 import UIKit
 #endif
 
-/// Industrial-grade playback interruption coordinator adhering to Apple HIG,
-/// ZFPlayer (`pauseByEvent`), and ByteDance audio session interruption patterns.
-///
-/// Disentangles user-initiated pause actions (`userPaused`) from hardware/system-driven
-/// interruptions (`pausedByInterruption`), such as lock screen, backgrounding, phone calls,
-/// Siri, alarms, and headphone unplugging.
+/// Translates app/audio-session notifications into events for the single audio
+/// focus reducer. It keeps no independent pause truth of its own; all decisions
+/// live in `AudioFocusState` inside `FeedPlayerPool`.
 @MainActor
 public final class PlaybackInterruptionCoordinator {
     public static let shared = PlaybackInterruptionCoordinator()
 
-    /// Explicit user intention (user tapped the screen or explicitly triggered pause).
-    public private(set) var userPaused: Bool = false
+    /// Explicit user intention, derived from the reducer state.
+    public var userPaused: Bool {
+        FeedPlayerPool.shared.userPaused
+    }
 
-    /// System/Hardware event-driven pause (lock screen, background, phone call, Siri, route change).
-    public private(set) var pausedByInterruption: Bool = false
+    /// System/hardware pause (scene, call/Siri, route loss), derived from the
+    /// reducer state. User pause always wins for UI purposes.
+    public var pausedByInterruption: Bool {
+        guard !userPaused else { return false }
+        return FeedPlayerPool.shared.hasSystemPauseReason
+    }
 
-    /// Whether playback should automatically resume when the system or app returns to active state.
+    /// Whether playback is allowed to resume automatically when the app or
+    /// audio session returns to active state.
     public var shouldResumeOnActive: Bool {
         !userPaused && pausedByInterruption
     }
@@ -42,20 +46,11 @@ public final class PlaybackInterruptionCoordinator {
         }
     }
 
-    // MARK: - User Intent Tracking
+    // MARK: - User Intent
 
-    /// Records explicit user playback intent (e.g. user tapped screen to play/pause).
+    /// Records explicit user playback intent (e.g. tapped screen to play/pause).
     public func setUserPaused(_ paused: Bool) {
-        userPaused = paused
-        if paused {
-            pausedByInterruption = false
-        }
-    }
-
-    /// Resets all pause flags when playback starts normally (e.g. feed paging settlement).
-    public func recordPlaybackStarted() {
-        userPaused = false
-        pausedByInterruption = false
+        FeedPlayerPool.shared.setUserPaused(paused)
     }
 
     // MARK: - Lifecycle & Hardware Notification Observers
@@ -81,7 +76,6 @@ public final class PlaybackInterruptionCoordinator {
         #endif
 
         #if canImport(AVFAudio)
-        // 1. Phone call, Siri, alarm interruptions (AVAudioSession.interruptionNotification)
         let o3 = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: nil,
@@ -90,7 +84,6 @@ public final class PlaybackInterruptionCoordinator {
             self?.handleAudioInterruption(notification: notification)
         }
 
-        // 2. Headphone / AirPods unplugged (AVAudioSession.routeChangeNotification)
         let o4 = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
@@ -105,18 +98,12 @@ public final class PlaybackInterruptionCoordinator {
     // MARK: - Interruption Handlers
 
     public func handleAppResignActive() {
-        if !userPaused {
-            pausedByInterruption = true
-        }
         FeedPlayerPool.shared.handleAppResignActive()
     }
 
     public func handleAppBecomeActive() {
-        guard shouldResumeOnActive else {
-            pausedByInterruption = false
-            return
-        }
-        pausedByInterruption = false
+        // The reducer removes only the scene reason. It will not resume a
+        // user-paused, interrupted, or route-lost owner.
         FeedPlayerPool.shared.handleAppBecomeActive()
     }
 
@@ -131,21 +118,17 @@ public final class PlaybackInterruptionCoordinator {
         switch type {
         case .began:
             NSLog("[PlaybackInterruptionCoordinator] Audio session interruption began (call/alarm/siri)")
-            if !userPaused {
-                pausedByInterruption = true
-            }
-            FeedPlayerPool.shared.pauseAll()
+            FeedPlayerPool.shared.handleAudioInterruptionBegan()
 
         case .ended:
             NSLog("[PlaybackInterruptionCoordinator] Audio session interruption ended")
-            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+            let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
             let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            if options.contains(.shouldResume) && shouldResumeOnActive {
-                pausedByInterruption = false
-                FeedPlayerPool.shared.handleAppBecomeActive()
-            } else {
-                pausedByInterruption = false
-            }
+            // If `.shouldResume` is absent, the reducer deliberately keeps the
+            // interruption reason and waits for an explicit user play.
+            FeedPlayerPool.shared.handleAudioInterruptionEnded(
+                shouldResume: options.contains(.shouldResume)
+            )
 
         @unknown default:
             break
@@ -159,13 +142,11 @@ public final class PlaybackInterruptionCoordinator {
             return
         }
 
-        // Apple HIG: When headphones or Bluetooth audio devices disconnect,
-        // MUST immediately pause video playback and force explicit user interaction to prevent blasting audio in public!
+        // Apple HIG: losing headphones/Bluetooth must pause immediately and
+        // require explicit user interaction before audio starts again.
         if reason == .oldDeviceUnavailable {
             NSLog("[PlaybackInterruptionCoordinator] Audio route changed (headphones disconnected); pausing per Apple HIG")
-            userPaused = true
-            pausedByInterruption = false
-            FeedPlayerPool.shared.pauseAll()
+            FeedPlayerPool.shared.handleAudioRouteLost()
         }
     }
     #endif

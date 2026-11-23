@@ -9,13 +9,7 @@ import XCTest
 final class PlaybackAudioFocusTests: XCTestCase {
     @MainActor
     private func resetSharedPlaybackState() {
-        let pool = FeedPlayerPool.shared
-        let coordinator = PlaybackInterruptionCoordinator.shared
-        pool.pauseAll()
-        pool.bgmPlayer.stop()
-        pool.activeSlot.clear()
-        pool.standbySlot.clear()
-        coordinator.recordPlaybackStarted()
+        FeedPlayerPool.shared.resetAudioFocusForTesting()
     }
 
     @MainActor
@@ -23,18 +17,17 @@ final class PlaybackAudioFocusTests: XCTestCase {
         let pool = FeedPlayerPool.shared
         let bgmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("stale-gallery-\(UUID().uuidString).m4a")
-            .absoluteString
 
         resetSharedPlaybackState()
         defer { resetSharedPlaybackState() }
 
-        pool.playBgm(urlString: bgmURL)
-        XCTAssertEqual(pool.bgmPlayer.currentUrl, bgmURL)
-        XCTAssertNil(pool.currentPlayingSlot)
+        pool.activateGallery(streamId: 1, bgmURL: bgmURL)
+        XCTAssertEqual(pool.audioOwner, .gallery(streamId: 1, bgmURL: bgmURL))
+        XCTAssertEqual(pool.bgmPlayer.currentUrl, bgmURL.absoluteString)
 
-        pool.play(slot: pool.activeSlot)
+        pool.play(slot: pool.activeSlot, streamId: 2)
 
-        XCTAssertTrue(pool.currentPlayingSlot === pool.activeSlot)
+        XCTAssertEqual(pool.audioOwner, .video(streamId: 2))
         XCTAssertNil(pool.bgmPlayer.currentUrl, "video focus must revoke stale gallery BGM ownership")
         XCTAssertFalse(pool.bgmPlayer.isPlaying)
     }
@@ -45,22 +38,22 @@ final class PlaybackAudioFocusTests: XCTestCase {
         let coordinator = PlaybackInterruptionCoordinator.shared
         let bgmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("stale-gallery-\(UUID().uuidString).m4a")
-            .absoluteString
 
         resetSharedPlaybackState()
         defer { resetSharedPlaybackState() }
 
         // Simulate: gallery BGM was playing, then the user swiped to a video.
-        pool.playBgm(urlString: bgmURL)
-        pool.play(slot: pool.activeSlot)
+        pool.activateGallery(streamId: 1, bgmURL: bgmURL)
+        pool.play(slot: pool.activeSlot, streamId: 2)
         XCTAssertNil(pool.bgmPlayer.currentUrl)
 
         coordinator.handleAppResignActive()
         coordinator.handleAppBecomeActive()
 
+        XCTAssertEqual(pool.audioOwner, .video(streamId: 2))
         XCTAssertNil(pool.bgmPlayer.currentUrl, "wake must not revive a previous gallery's BGM")
         XCTAssertFalse(pool.bgmPlayer.isPlaying)
-        XCTAssertTrue(pool.currentPlayingSlot === pool.activeSlot)
+        XCTAssertFalse(pool.userPaused)
     }
 }
 #endif

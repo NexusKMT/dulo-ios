@@ -160,6 +160,10 @@ public final class FeedPlayerPool {
         private var endObserver: NSObjectProtocol?
         public private(set) var currentUrl: String?
 
+        /// Set by the pool. A queued end notification must only loop while
+        /// this gallery still owns audio focus and is allowed to play.
+        public var shouldLoop: (() -> Bool)?
+
         public init() {
             player.automaticallyWaitsToMinimizeStalling = false
             player.actionAtItemEnd = .none
@@ -172,13 +176,11 @@ public final class FeedPlayerPool {
                 guard let self = self,
                       let currentItem = self.player.currentItem,
                       (notification.object as? AVPlayerItem) === currentItem else { return }
-                // A queued end notification must not revive music after a pause,
-                // route change, or background transition.
-                guard !PlaybackInterruptionCoordinator.shared.userPaused,
+                guard self.shouldLoop?() == true,
                       self.player.timeControlStatus != .paused else { return }
                 self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                     guard let self = self,
-                          !PlaybackInterruptionCoordinator.shared.userPaused,
+                          self.shouldLoop?() == true,
                           self.player.timeControlStatus != .paused else { return }
                     self.player.play()
                 }
@@ -232,11 +234,17 @@ public final class FeedPlayerPool {
     public let standbySlot = PlayerSlot(slotIndex: 1)
     public let bgmPlayer = BgmAudioPlayer()
 
+    /// Actual implementation state. Never use this as the source of truth for
+    /// lifecycle decisions; `audioFocus` is the policy state.
     public private(set) weak var currentPlayingSlot: PlayerSlot?
-    public var userPaused: Bool {
-        get { PlaybackInterruptionCoordinator.shared.userPaused }
-        set { PlaybackInterruptionCoordinator.shared.setUserPaused(newValue) }
-    }
+
+    /// The single policy state for video and gallery audio.
+    private(set) var audioFocus = AudioFocusState()
+
+    public var audioOwner: AudioOwner { audioFocus.owner }
+    public var userPaused: Bool { audioFocus.isUserPaused }
+    public var hasSystemPauseReason: Bool { audioFocus.hasSystemPauseReason }
+    public var shouldPlayAudio: Bool { audioFocus.shouldPlay }
 
     /// Dynamic symmetric 2-decoder allocation adhering to TikTok/Douyin Ping-Pong architecture.
     /// Preserves existing playback session when transitioning between active and prewarm states,
@@ -259,45 +267,17 @@ public final class FeedPlayerPool {
         }
     }
 
-    /// Guarantees strict single-playback invariant: exactly ONE audio/video source plays at any moment.
-    /// This is intentionally idempotent: scroll/layout refreshes must not reset interruption
-    /// or user-pause intent.
-    public func play(slot: PlayerSlot) {
-        let coordinator = PlaybackInterruptionCoordinator.shared
-        guard !coordinator.userPaused, !coordinator.pausedByInterruption else { return }
-
-        // A video taking audio focus revokes any gallery BGM ownership. Pausing
-        // alone leaves `currentUrl` behind, and wake-from-lock would resume that
-        // stale gallery track underneath the current video.
-        bgmPlayer.stop()
-
-        if currentPlayingSlot === slot,
-           slot.player.timeControlStatus == .playing {
-            return
-        }
-        PlayerFactory.activateAudioSession()
-        currentPlayingSlot = slot
-        if slot === activeSlot {
-            standbySlot.pause()
-        } else {
-            activeSlot.pause()
-        }
-        slot.play()
+    /// Feeds a video page activation into the single audio reducer. The pool
+    /// executes effects; it no longer decides whether BGM or a video wins.
+    public func play(slot: PlayerSlot, streamId: Int64? = nil) {
+        guard let streamId = streamId ?? slot.currentStreamId else { return }
+        applyAudio(.activateVideo(streamId: streamId), preferredSlot: slot)
     }
 
-    public func playBgm(urlString: String) {
-        let coordinator = PlaybackInterruptionCoordinator.shared
-        guard !coordinator.userPaused, !coordinator.pausedByInterruption else { return }
-        if currentPlayingSlot == nil,
-           bgmPlayer.currentUrl == urlString,
-           bgmPlayer.isPlaying {
-            return
-        }
-        PlayerFactory.activateAudioSession()
-        currentPlayingSlot = nil
-        activeSlot.pause()
-        standbySlot.pause()
-        bgmPlayer.play(urlString: urlString)
+    /// A gallery page owns audio for its stream, with or without BGM. Passing
+    /// `nil` is an explicit "this page has no BGM" and stops any leftover track.
+    public func activateGallery(streamId: Int64, bgmURL: URL?) {
+        applyAudio(.activateGallery(streamId: streamId, bgmURL: bgmURL))
     }
 
     public func slot(for streamId: Int64) -> PlayerSlot? {
@@ -310,69 +290,174 @@ public final class FeedPlayerPool {
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
         #endif
+        bgmPlayer.shouldLoop = { [weak self] in
+            guard let self else { return false }
+            guard case .gallery = self.audioFocus.owner else { return false }
+            return self.audioFocus.shouldPlay
+        }
         _ = PlaybackInterruptionCoordinator.shared
     }
 
-    // MARK: - App Interruption & Lock Screen Lifecycle (Decoupled from Feed Paging)
+    // MARK: - Audio Focus Reducer
+
+    private func applyAudio(
+        _ event: AudioFocusEvent,
+        preferredSlot: PlayerSlot? = nil
+    ) {
+        let effects = AudioFocusReducer.reduce(state: &audioFocus, event: event)
+        for effect in effects {
+            performAudio(effect, preferredSlot: preferredSlot)
+        }
+    }
+
+    private func performAudio(
+        _ effect: AudioFocusEffect,
+        preferredSlot: PlayerSlot? = nil
+    ) {
+        switch effect {
+        case .activateSession:
+            PlayerFactory.activateAudioSession()
+
+        case .deactivateSession:
+            PlayerFactory.deactivateAudioSession()
+
+        case .playVideo(let streamId):
+            guard let slot = slot(for: streamId) ?? preferredSlot else { return }
+            if slot === activeSlot {
+                standbySlot.pause()
+            } else {
+                activeSlot.pause()
+            }
+            currentPlayingSlot = slot
+            slot.play()
+
+        case .pauseVideo:
+            activeSlot.pause()
+            standbySlot.pause()
+            currentPlayingSlot = nil
+
+        case .playBGM(_, let url):
+            currentPlayingSlot = nil
+            activeSlot.pause()
+            standbySlot.pause()
+            bgmPlayer.play(urlString: url.absoluteString)
+
+        case .pauseBGM:
+            bgmPlayer.pause()
+
+        case .stopBGM:
+            bgmPlayer.stop()
+        }
+    }
+
+    // MARK: - App Interruption & Lock Screen Lifecycle
+
+    public func handlePageChanged() {
+        applyAudio(.pageChanged)
+    }
 
     public func handleAppResignActive() {
-        activeSlot.pause()
-        standbySlot.pause()
-        bgmPlayer.pause()
-        PlayerFactory.deactivateAudioSession()
+        applyAudio(.sceneInactive)
     }
 
     public func handleAppBecomeActive() {
         LocalMediaProxyServer.shared.ensureRunning()
-
-        // Audio focus is exclusive. If a video is the current owner, drop any
-        // gallery BGM left over from a previous page before resuming video.
-        if currentPlayingSlot != nil {
-            bgmPlayer.stop()
-        }
-
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
-        if currentPlayingSlot != nil || bgmPlayer.currentUrl != nil {
-            PlayerFactory.activateAudioSession()
-        }
         #endif
+        applyAudio(.sceneActive)
+        healVideoAfterForeground()
+    }
 
-        if let slot = currentPlayingSlot {
-            if slot.player.currentItem?.status == .failed || slot.player.error != nil {
-                if let sId = slot.currentStreamId, let vId = slot.currentVideoId, let url = slot.currentPlayUrl {
-                    slot.prepare(streamId: sId, videoId: vId, playUrl: url, autoplay: true)
-                }
-            } else {
-                let currentTime = slot.player.currentTime()
-                // If stream stalled due to socket reset during lock screen, seeking to currentTime forces
-                // AVURLAsset to issue a fresh HTTP Range request to LocalMediaProxyServer, reconnecting cleanly!
-                if slot.player.timeControlStatus != .playing {
-                    slot.player.seek(to: currentTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak slot] _ in
-                        slot?.play()
-                    }
-                } else {
-                    slot.play()
-                }
+    public func handleAudioInterruptionBegan() {
+        applyAudio(.interruptionBegan)
+    }
+
+    public func handleAudioInterruptionEnded(shouldResume: Bool) {
+        applyAudio(.interruptionEnded(shouldResume: shouldResume))
+        if shouldResume {
+            healVideoAfterForeground()
+        }
+    }
+
+    public func handleAudioRouteLost() {
+        applyAudio(.routeLost)
+    }
+
+    public func setUserPaused(_ paused: Bool) {
+        applyAudio(paused ? .userPause : .userPlay)
+    }
+
+    private func healVideoAfterForeground() {
+        guard case .video(let streamId) = audioFocus.owner,
+              let slot = slot(for: streamId) else {
+            healFailedVideo(activeSlot)
+            healFailedVideo(standbySlot)
+            return
+        }
+
+        let autoplay = audioFocus.shouldPlay
+        if slot.player.currentItem?.status == .failed || slot.player.error != nil {
+            if let sId = slot.currentStreamId,
+               let vId = slot.currentVideoId,
+               let url = slot.currentPlayUrl {
+                slot.prepare(
+                    streamId: sId,
+                    videoId: vId,
+                    playUrl: url,
+                    autoplay: autoplay
+                )
             }
-        }
-
-        // Also ensure the standby slot's item is self-healed if its socket was severed
-        let standby = (currentPlayingSlot === activeSlot) ? standbySlot : activeSlot
-        if standby.player.currentItem?.status == .failed || standby.player.error != nil {
-            if let sId = standby.currentStreamId, let vId = standby.currentVideoId, let url = standby.currentPlayUrl {
-                standby.prepare(streamId: sId, videoId: vId, playUrl: url, autoplay: false)
+        } else if autoplay && slot.player.timeControlStatus != .playing {
+            let currentTime = slot.player.currentTime()
+            // Force a fresh Range request if the proxy socket was severed
+            // while the app was locked.
+            slot.player.seek(
+                to: currentTime,
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            ) { [weak self, weak slot] _ in
+                guard let self,
+                      let slot,
+                      self.audioFocus.shouldPlay,
+                      self.audioFocus.owner == .video(streamId: streamId) else { return }
+                slot.play()
             }
+        } else if autoplay {
+            slot.play()
         }
 
-        if currentPlayingSlot == nil, bgmPlayer.currentUrl != nil {
-            bgmPlayer.resume()
+        healFailedVideo(slot === activeSlot ? standbySlot : activeSlot)
+    }
+
+    private func healFailedVideo(_ slot: PlayerSlot) {
+        guard slot.player.currentItem?.status == .failed || slot.player.error != nil else {
+            return
         }
+        guard let streamId = slot.currentStreamId,
+              let videoId = slot.currentVideoId,
+              let url = slot.currentPlayUrl else { return }
+        slot.prepare(
+            streamId: streamId,
+            videoId: videoId,
+            playUrl: url,
+            autoplay: false
+        )
     }
 
     public func pauseAll() {
         activeSlot.pause()
         standbySlot.pause()
         bgmPlayer.pause()
+        currentPlayingSlot = nil
+    }
+
+    /// Test-only reset that also clears the policy state.
+    func resetAudioFocusForTesting() {
+        audioFocus = AudioFocusState()
+        activeSlot.clear()
+        standbySlot.clear()
+        bgmPlayer.stop()
+        currentPlayingSlot = nil
     }
 }
