@@ -1,5 +1,9 @@
 import XCTest
+#if canImport(UIKit)
 @testable import Dulo
+#else
+@testable import DuloCore
+#endif
 
 final class MediaResolutionTests: XCTestCase {
     func testDecodeVideoResolveResponseWithExpiresAt() throws {

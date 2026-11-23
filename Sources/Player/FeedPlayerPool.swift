@@ -94,10 +94,9 @@ public final class FeedPlayerPool {
             guard let url = URL(string: playUrl) else { return }
 
             let playbackUrl = LocalMediaProxyServer.shared.proxyUrl(for: url, cacheKey: videoId)
-            let asset = AVURLAsset(
-                url: playbackUrl,
-                options: ["AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders]
-            )
+            // Headers (UA/Referer) are injected by LocalMediaProxyServer; AVURLAsset
+            // does not expose a supported per-asset HTTP header dictionary on iOS 15.
+            let asset = AVURLAsset(url: playbackUrl)
             let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 2.0 // 2.0s lean buffer for A9 2GB RAM
 
@@ -173,8 +172,15 @@ public final class FeedPlayerPool {
                 guard let self = self,
                       let currentItem = self.player.currentItem,
                       (notification.object as? AVPlayerItem) === currentItem else { return }
+                // A queued end notification must not revive music after a pause,
+                // route change, or background transition.
+                guard !PlaybackInterruptionCoordinator.shared.userPaused,
+                      self.player.timeControlStatus != .paused else { return }
                 self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                    self?.player.play()
+                    guard let self = self,
+                          !PlaybackInterruptionCoordinator.shared.userPaused,
+                          self.player.timeControlStatus != .paused else { return }
+                    self.player.play()
                 }
             }
         }
@@ -197,9 +203,7 @@ public final class FeedPlayerPool {
             currentUrl = urlString
 
             let playbackUrl = LocalMediaProxyServer.shared.proxyUrl(for: url)
-            let asset = AVURLAsset(url: playbackUrl, options: [
-                "AVURLAssetHTTPHeaderFieldsKey": PlayerFactory.httpHeaders
-            ])
+            let asset = AVURLAsset(url: playbackUrl)
             let item = AVPlayerItem(asset: asset)
             item.preferredForwardBufferDuration = 2.0
             player.replaceCurrentItem(with: item)
@@ -211,6 +215,7 @@ public final class FeedPlayerPool {
         }
 
         public func stop() {
+            guard currentUrl != nil || player.currentItem != nil else { return }
             player.pause()
             player.replaceCurrentItem(with: nil)
             currentUrl = nil
@@ -255,8 +260,16 @@ public final class FeedPlayerPool {
     }
 
     /// Guarantees strict single-playback invariant: exactly ONE audio/video source plays at any moment.
+    /// This is intentionally idempotent: scroll/layout refreshes must not reset interruption
+    /// or user-pause intent.
     public func play(slot: PlayerSlot) {
-        PlaybackInterruptionCoordinator.shared.recordPlaybackStarted()
+        let coordinator = PlaybackInterruptionCoordinator.shared
+        guard !coordinator.userPaused, !coordinator.pausedByInterruption else { return }
+        if currentPlayingSlot === slot,
+           slot.player.timeControlStatus == .playing {
+            return
+        }
+        PlayerFactory.activateAudioSession()
         currentPlayingSlot = slot
         if slot === activeSlot {
             standbySlot.pause()
@@ -268,7 +281,14 @@ public final class FeedPlayerPool {
     }
 
     public func playBgm(urlString: String) {
-        PlaybackInterruptionCoordinator.shared.recordPlaybackStarted()
+        let coordinator = PlaybackInterruptionCoordinator.shared
+        guard !coordinator.userPaused, !coordinator.pausedByInterruption else { return }
+        if currentPlayingSlot == nil,
+           bgmPlayer.currentUrl == urlString,
+           bgmPlayer.isPlaying {
+            return
+        }
+        PlayerFactory.activateAudioSession()
         currentPlayingSlot = nil
         activeSlot.pause()
         standbySlot.pause()
@@ -294,12 +314,16 @@ public final class FeedPlayerPool {
         activeSlot.pause()
         standbySlot.pause()
         bgmPlayer.pause()
+        PlayerFactory.deactivateAudioSession()
     }
 
     public func handleAppBecomeActive() {
         LocalMediaProxyServer.shared.ensureRunning()
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
+        if currentPlayingSlot != nil || bgmPlayer.currentUrl != nil {
+            PlayerFactory.activateAudioSession()
+        }
         #endif
 
         if let slot = currentPlayingSlot {
