@@ -11,6 +11,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Enforce build number bump
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          BASE_BUILD=$(git show "origin/$BASE_REF:project.yml" | awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}')
+          HEAD_BUILD=$(awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}' project.yml)
+          echo "main build: $BASE_BUILD; PR build: $HEAD_BUILD"
+          if [ -z "$BASE_BUILD" ] || [ -z "$HEAD_BUILD" ]; then
+            echo "::error::Could not read CURRENT_PROJECT_VERSION from project.yml"
+            exit 1
+          fi
+          if [ "$HEAD_BUILD" -le "$BASE_BUILD" ]; then
+            echo "::error::CURRENT_PROJECT_VERSION must be incremented for every change (main=$BASE_BUILD, PR=$HEAD_BUILD)"
+            exit 1
+          fi
+
       - name: Install XcodeGen
         run: brew install xcodegen
 

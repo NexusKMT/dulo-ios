@@ -19,6 +19,12 @@ push → macos-15 → xcodegen generate → 模拟器单测 → 无签名 archiv
 
 IPA 不签名（TrollStore 安装时自动 fakesign）。
 
+## 版本规则
+
+任何改动（代码、配置、文档、CI）都必须递增 `project.yml` 的
+`CURRENT_PROJECT_VERSION`。PR 的 CI 会对比 `main`，未递增时直接失败。
+`MARKETING_VERSION` 仅在发布时提升。
+
 ## 本地开发
 
 ```sh
