@@ -228,8 +228,10 @@ public final class FeedPlayerPool {
     public let bgmPlayer = BgmAudioPlayer()
 
     public private(set) weak var currentPlayingSlot: PlayerSlot?
-    public var userPaused: Bool = false
-    private var lifecycleObservers: [NSObjectProtocol] = []
+    public var userPaused: Bool {
+        get { PlaybackInterruptionCoordinator.shared.userPaused }
+        set { PlaybackInterruptionCoordinator.shared.setUserPaused(newValue) }
+    }
 
     /// Dynamic symmetric 2-decoder allocation adhering to TikTok/Douyin Ping-Pong architecture.
     /// Preserves existing playback session when transitioning between active and prewarm states,
@@ -254,7 +256,7 @@ public final class FeedPlayerPool {
 
     /// Guarantees strict single-playback invariant: exactly ONE audio/video source plays at any moment.
     public func play(slot: PlayerSlot) {
-        userPaused = false
+        PlaybackInterruptionCoordinator.shared.recordPlaybackStarted()
         currentPlayingSlot = slot
         if slot === activeSlot {
             standbySlot.pause()
@@ -266,7 +268,7 @@ public final class FeedPlayerPool {
     }
 
     public func playBgm(urlString: String) {
-        userPaused = false
+        PlaybackInterruptionCoordinator.shared.recordPlaybackStarted()
         currentPlayingSlot = nil
         activeSlot.pause()
         standbySlot.pause()
@@ -283,36 +285,10 @@ public final class FeedPlayerPool {
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
         #endif
-        setupLifecycleObservers()
-    }
-
-    deinit {
-        for observer in lifecycleObservers {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        _ = PlaybackInterruptionCoordinator.shared
     }
 
     // MARK: - App Interruption & Lock Screen Lifecycle (Decoupled from Feed Paging)
-
-    private func setupLifecycleObservers() {
-        #if canImport(UIKit)
-        let o1 = NotificationCenter.default.addObserver(
-            forName: UIApplication.willResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.handleAppResignActive()
-        }
-        let o2 = NotificationCenter.default.addObserver(
-            forName: UIApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.handleAppBecomeActive()
-        }
-        lifecycleObservers = [o1, o2]
-        #endif
-    }
 
     public func handleAppResignActive() {
         activeSlot.pause()
@@ -325,7 +301,6 @@ public final class FeedPlayerPool {
         #if canImport(AVFAudio)
         PlayerFactory.configureAudioSession()
         #endif
-        guard !userPaused else { return }
 
         if let slot = currentPlayingSlot {
             if slot.player.currentItem?.status == .failed || slot.player.error != nil {

@@ -209,4 +209,42 @@ final class MediaCacheTests: XCTestCase {
         XCTAssertTrue(proxy.isHealthy())
         XCTAssertTrue(proxy.port > 0)
     }
+
+    @MainActor
+    func testPlaybackInterruptionCoordinatorIntentStateMachine() {
+        let coordinator = PlaybackInterruptionCoordinator.shared
+        coordinator.recordPlaybackStarted()
+        XCTAssertFalse(coordinator.userPaused)
+        XCTAssertFalse(coordinator.pausedByInterruption)
+        XCTAssertFalse(coordinator.shouldResumeOnActive)
+
+        // Lock screen / background interruption
+        coordinator.handleAppResignActive()
+        XCTAssertFalse(coordinator.userPaused)
+        XCTAssertTrue(coordinator.pausedByInterruption)
+        XCTAssertTrue(coordinator.shouldResumeOnActive)
+
+        // Return to active -> auto resume
+        coordinator.handleAppBecomeActive()
+        XCTAssertFalse(coordinator.pausedByInterruption)
+
+        // Explicit user pause (tap to pause)
+        coordinator.setUserPaused(true)
+        XCTAssertTrue(coordinator.userPaused)
+        XCTAssertFalse(coordinator.shouldResumeOnActive)
+
+        // Now lock screen while already paused by user
+        coordinator.handleAppResignActive()
+        XCTAssertTrue(coordinator.userPaused)
+        XCTAssertFalse(coordinator.pausedByInterruption) // User pause takes precedence
+        XCTAssertFalse(coordinator.shouldResumeOnActive) // MUST NOT auto-resume!
+
+        // Unlock screen -> remains paused!
+        coordinator.handleAppBecomeActive()
+        XCTAssertTrue(coordinator.userPaused)
+
+        // Normal feed scroll reset
+        coordinator.recordPlaybackStarted()
+        XCTAssertFalse(coordinator.userPaused)
+    }
 }
