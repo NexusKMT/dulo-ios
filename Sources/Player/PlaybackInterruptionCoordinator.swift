@@ -76,7 +76,21 @@ public final class PlaybackInterruptionCoordinator {
                 self?.handleAppBecomeActive()
             }
         }
-        observers.append(contentsOf: [o1, o2])
+
+        // `willEnterForeground` only fires on a real background -> foreground
+        // transition, not when Control Center or a notification banner merely
+        // deactivates the app. That makes it usable as explicit user intent
+        // without resurrecting audio just because an overlay was dismissed.
+        let foreground = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleAppWillEnterForeground()
+            }
+        }
+        observers.append(contentsOf: [o1, o2, foreground])
         #endif
 
         #if canImport(AVFAudio)
@@ -109,36 +123,47 @@ public final class PlaybackInterruptionCoordinator {
         FeedPlayerPool.shared.handleAppResignActive()
     }
 
+    public func handleAppWillEnterForeground() {
+        FeedPlayerPool.shared.handleForegroundEntered()
+    }
+
     public func handleAppBecomeActive() {
-        // The reducer removes only the scene reason. It will not resume a
-        // user-paused, interrupted, or route-lost owner.
+        // sceneActive clears only the scene reason. Sticky interruption and
+        // route reasons are cleared by willEnterForeground or a page change;
+        // `.user` still requires an explicit play in all cases.
         FeedPlayerPool.shared.handleAppBecomeActive()
     }
 
     #if canImport(AVFAudio)
     public func handleAudioInterruption(notification: Notification) {
         guard let userInfo = notification.userInfo,
-              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt else {
             return
         }
 
-        switch type {
-        case .began:
+        let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt
+        let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        guard let event = AudioSessionEventMapper.interruptionEvent(
+            type: typeValue,
+            reason: reasonValue,
+            options: optionsValue
+        ) else {
+            // Most commonly `.appWasSuspended`: the system can deliver this
+            // without a matching `.ended`, so it must not become sticky state.
+            NSLog("[PlaybackInterruptionCoordinator] Ignoring non-playback interruption")
+            return
+        }
+
+        switch event {
+        case .interruptionBegan:
             NSLog("[PlaybackInterruptionCoordinator] Audio session interruption began (call/alarm/siri)")
             FeedPlayerPool.shared.handleAudioInterruptionBegan()
 
-        case .ended:
-            NSLog("[PlaybackInterruptionCoordinator] Audio session interruption ended")
-            let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            // If `.shouldResume` is absent, the reducer deliberately keeps the
-            // interruption reason and waits for an explicit user play.
-            FeedPlayerPool.shared.handleAudioInterruptionEnded(
-                shouldResume: options.contains(.shouldResume)
-            )
+        case .interruptionEnded(let shouldResume):
+            NSLog("[PlaybackInterruptionCoordinator] Audio session interruption ended (shouldResume=\(shouldResume))")
+            FeedPlayerPool.shared.handleAudioInterruptionEnded(shouldResume: shouldResume)
 
-        @unknown default:
+        default:
             break
         }
     }
@@ -146,15 +171,21 @@ public final class PlaybackInterruptionCoordinator {
     public func handleAudioRouteChange(notification: Notification) {
         guard let userInfo = notification.userInfo,
               let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+              let event = AudioSessionEventMapper.routeChangeEvent(reason: reasonValue) else {
             return
         }
 
-        // Apple HIG: losing headphones/Bluetooth must pause immediately and
-        // require explicit user interaction before audio starts again.
-        if reason == .oldDeviceUnavailable {
+        switch event {
+        case .routeLost:
             NSLog("[PlaybackInterruptionCoordinator] Audio route changed (headphones disconnected); pausing per Apple HIG")
             FeedPlayerPool.shared.handleAudioRouteLost()
+
+        case .routeAvailable:
+            NSLog("[PlaybackInterruptionCoordinator] Audio route changed (headphones connected); clearing route pause")
+            FeedPlayerPool.shared.handleAudioRouteAvailable()
+
+        default:
+            break
         }
     }
     #endif

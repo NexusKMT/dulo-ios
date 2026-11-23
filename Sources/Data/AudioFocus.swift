@@ -59,6 +59,8 @@ public enum AudioFocusEvent: Equatable {
     case interruptionBegan
     case interruptionEnded(shouldResume: Bool)
     case routeLost
+    case routeAvailable
+    case foregroundEntered
 }
 
 public enum AudioFocusEffect: Equatable {
@@ -109,12 +111,17 @@ public enum AudioFocusReducer {
             return effects
 
         case .pageChanged:
-            // Paging is a new ownership epoch. Revoke the previous owner
-            // before the new cell has resolved its media, so a slow lease can
-            // never leave old BGM playing into the next page.
+            // Paging is a new ownership epoch and explicit user intent in the
+            // zero-UI feed. Revoke the previous owner before the new cell has
+            // resolved its media, so a slow lease can never leave old BGM
+            // playing into the next page. Clearing sticky system reasons here
+            // is what lets a swipe recover from a headphone disconnect or an
+            // interruption that ended without `.shouldResume`.
             state.owner = .idle
             state.epoch &+= 1
             state.pauseReasons.remove(.user)
+            state.pauseReasons.remove(.interruption)
+            state.pauseReasons.remove(.routeChange)
             return [.stopBGM, .pauseVideo]
 
         case .userPause:
@@ -145,14 +152,31 @@ public enum AudioFocusReducer {
                 return reconcile(state)
             }
             // The system recommends against resuming. Keep the reason until
-            // the user explicitly asks to play again.
+            // a user-intent event (page changed, foreground return, explicit
+            // play, or the audio route coming back).
             return pauseEffects(for: state.owner) + [.deactivateSession]
 
         case .routeLost:
-            // Apple HIG: losing headphones/Bluetooth requires explicit user
-            // interaction before audio starts again.
+            // Apple HIG: losing headphones/Bluetooth must pause immediately.
+            // The sticky reason is cleared by a page change, foreground
+            // return, route return, or explicit play.
             state.pauseReasons.insert(.routeChange)
             return pauseEffects(for: state.owner) + [.deactivateSession]
+
+        case .routeAvailable:
+            // Reconnecting headphones/Bluetooth is user intent for the route
+            // only; a user pause or an active interruption must still win.
+            state.pauseReasons.remove(.routeChange)
+            return reconcile(state)
+
+        case .foregroundEntered:
+            // Returning from the background is explicit user intent. Do not
+            // clear `.user`: that remains reserved for real user pause/play
+            // controls (e.g. remote commands). `.sceneInactive` is cleared by
+            // the following sceneActive event, not here.
+            state.pauseReasons.remove(.interruption)
+            state.pauseReasons.remove(.routeChange)
+            return reconcile(state)
         }
     }
 

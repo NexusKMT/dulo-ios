@@ -367,6 +367,14 @@ public final class FeedPlayerPool {
         applyAudio(.sceneInactive)
     }
 
+    public func handleForegroundEntered() {
+        // A real background -> foreground transition is explicit user intent.
+        // Restore the proxy before the reducer replays the current owner, so a
+        // socket that died while suspended cannot be reused.
+        LocalMediaProxyServer.shared.ensureRunning()
+        applyAudio(.foregroundEntered)
+    }
+
     public func handleAppBecomeActive() {
         LocalMediaProxyServer.shared.ensureRunning()
         #if canImport(AVFAudio)
@@ -389,6 +397,13 @@ public final class FeedPlayerPool {
 
     public func handleAudioRouteLost() {
         applyAudio(.routeLost)
+    }
+
+    public func handleAudioRouteAvailable() {
+        applyAudio(.routeAvailable)
+        if audioFocus.shouldPlay {
+            healVideoAfterForeground()
+        }
     }
 
     public func setUserPaused(_ paused: Bool) {
