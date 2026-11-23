@@ -1,5 +1,9 @@
 import XCTest
+#if canImport(DuloCore)
 @testable import DuloCore
+#else
+@testable import Dulo
+#endif
 
 /// Deterministic RNG for the queue tests, mirroring Kotlin's `Random(seed)`.
 private struct SplitMix64: RandomNumberGenerator {

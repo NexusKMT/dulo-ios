@@ -1,5 +1,9 @@
 import XCTest
+#if canImport(DuloCore)
 @testable import DuloCore
+#else
+@testable import Dulo
+#endif
 
 final class LeaseTests: XCTestCase {
     func testFreshOutsideMargin() {

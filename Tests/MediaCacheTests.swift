@@ -1,5 +1,9 @@
 import XCTest
+#if canImport(DuloCore)
 @testable import DuloCore
+#else
+@testable import Dulo
+#endif
 
 final class MediaCacheTests: XCTestCase {
     func testMediaCacheKeyWithHint() {
@@ -210,6 +214,7 @@ final class MediaCacheTests: XCTestCase {
         XCTAssertTrue(proxy.port > 0)
     }
 
+    #if canImport(UIKit)
     @MainActor
     func testPlaybackInterruptionCoordinatorIntentStateMachine() {
         let coordinator = PlaybackInterruptionCoordinator.shared
@@ -247,6 +252,8 @@ final class MediaCacheTests: XCTestCase {
         coordinator.recordPlaybackStarted()
         XCTAssertFalse(coordinator.userPaused)
     }
+
+    #endif
 
     func testMoovBoundaryRejectsUnrepresentable64BitSize() {
         var header = Data()
