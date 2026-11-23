@@ -21,7 +21,6 @@ final class PlaybackAudioFocusTests: XCTestCase {
     @MainActor
     func testVideoAudioFocusStopsGalleryBgm() {
         let pool = FeedPlayerPool.shared
-        let coordinator = PlaybackInterruptionCoordinator.shared
         let bgmURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("stale-gallery-\(UUID().uuidString).m4a")
             .absoluteString
