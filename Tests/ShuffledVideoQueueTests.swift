@@ -1,8 +1,8 @@
 import XCTest
-#if canImport(DuloCore)
-@testable import DuloCore
-#else
+#if canImport(UIKit)
 @testable import Dulo
+#else
+@testable import DuloCore
 #endif
 
 /// Deterministic RNG for the queue tests, mirroring Kotlin's `Random(seed)`.
