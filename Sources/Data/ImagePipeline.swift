@@ -146,7 +146,7 @@ final class ImagePipeline {
     }
 
     /// Decodes and downsamples image data using ImageIO. Safe to call off-main.
-    private static func decodeAndDownsample(data: Data, maxPixelSize: CGFloat = 1920) -> UIImage? {
+    nonisolated private static func decodeAndDownsample(data: Data, maxPixelSize: CGFloat = 1920) -> UIImage? {
         let options: [CFString: Any] = [
             kCGImageSourceShouldCache: false
         ]
