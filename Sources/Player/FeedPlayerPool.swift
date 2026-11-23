@@ -180,7 +180,7 @@ public final class FeedPlayerPool {
                     guard self.shouldLoop?() == true,
                           self.player.timeControlStatus != .paused else { return }
                     self.player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                        MainActor.assumeIsolated {
+                        Task { @MainActor [weak self] in
                             guard let self = self,
                                   self.shouldLoop?() == true,
                                   self.player.timeControlStatus != .paused else { return }
@@ -424,7 +424,7 @@ public final class FeedPlayerPool {
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
             ) { [weak self, weak slot] _ in
-                MainActor.assumeIsolated {
+                Task { @MainActor [weak self, weak slot] in
                     guard let self,
                           let slot,
                           self.audioFocus.shouldPlay,
