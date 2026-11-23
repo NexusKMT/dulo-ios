@@ -1,4 +1,4 @@
-name: Build experiment IPAs
+name: Build IPA
 
 on:
   push:
@@ -9,10 +9,16 @@ on:
 
 jobs:
   build:
+    # Only experiment/* branches produce all three arms. Normal PRs and main
+    # pushes build the control arm once, so the matrix does not become a
+    # permanent 3x cost.
     name: build-${{ matrix.variant }}
     runs-on: macos-15
+    env:
+      IS_EXPERIMENT: ${{ startsWith(github.head_ref, 'experiment/') || startsWith(github.ref_name, 'experiment/') }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           # Same commit, three arms. Build number is the primary discriminator;
@@ -51,9 +57,11 @@ jobs:
           fi
 
       - name: Install XcodeGen
+        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         run: brew install xcodegen
 
       - name: Generate Xcode project
+        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         run: xcodegen generate
 
       - name: Unit tests (control arm)
@@ -79,6 +87,7 @@ jobs:
             "${SETTINGS[@]}"
 
       - name: Archive (unsigned; TrollStore signs on install)
+        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         env:
           VARIANT_CONDITION: ${{ matrix.condition }}
           BUILD_NUMBER: ${{ matrix.build }}
@@ -94,12 +103,14 @@ jobs:
             "${SETTINGS[@]}"
 
       - name: Package IPA
+        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         run: |
           mkdir -p Payload
           cp -R "build/Dulo-${{ matrix.variant }}.xcarchive/Products/Applications/Dulo.app" Payload/
           zip -r -X "Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}.ipa" Payload
 
       - uses: actions/upload-artifact@v7
+        if: matrix.variant == 'control' || env.IS_EXPERIMENT == 'true'
         with:
           name: Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}
           path: Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}.ipa
