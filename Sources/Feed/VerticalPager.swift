@@ -737,6 +737,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                     )
                     if slot.isReusable(streamId: item.streamId, playUrl: playUrl) {
                         slot.setMuted(true)
+                        slot.pause()
                     } else {
                         slot.prepare(
                             streamId: item.streamId,
