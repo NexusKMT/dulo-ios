@@ -322,6 +322,7 @@ public final class FeedPlayerPool {
             PlayerFactory.deactivateAudioSession()
 
         case .playVideo(let streamId):
+            guard audioFocus.owner == .video(streamId: streamId) else { return }
             guard let slot = slot(for: streamId) ?? preferredSlot else { return }
             if slot === activeSlot {
                 standbySlot.pause()
@@ -336,7 +337,9 @@ public final class FeedPlayerPool {
             standbySlot.pause()
             currentPlayingSlot = nil
 
-        case .playBGM(_, let url):
+        case .playBGM(let streamId, let url):
+            guard case .gallery(let ownerStreamId, _) = audioFocus.owner,
+                  ownerStreamId == streamId else { return }
             currentPlayingSlot = nil
             activeSlot.pause()
             standbySlot.pause()
