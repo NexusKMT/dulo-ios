@@ -388,8 +388,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             let hadAttachment = attachedSlot != nil || singlePlayerView.playerLayer.player != nil
             attachedSlot = nil
             clearItemObservers()
-            guard hadAttachment else { return }
-            FeedPlayerPool.noteLayerDetach()
+            if hadAttachment { FeedPlayerPool.noteLayerDetach() }
             singlePlayerView.resetDetachedPlayer()
             singlePlayerView.playerLayer.player = nil
             singlePlayerView.alpha = 0.0
@@ -401,7 +400,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             let alreadyAttached = attachedSlot === slot
                 && singlePlayerView.playerLayer.player === slot.player
                 && observedItem === slot.player.currentItem
-            if alreadyAttached { return }
+            if alreadyAttached, ExperimentVariant.stickyPrewarmEnabled { return }
             attachedSlot = slot
             observeItemStatus(slot.player.currentItem, videoId: currentItem?.video.id)
             if singlePlayerView.playerLayer.player !== slot.player {
