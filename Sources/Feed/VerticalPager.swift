@@ -400,7 +400,12 @@ struct VerticalPager: UIViewControllerRepresentable {
             let alreadyAttached = attachedSlot === slot
                 && singlePlayerView.playerLayer.player === slot.player
                 && observedItem === slot.player.currentItem
-            if alreadyAttached, ExperimentVariant.stickyPrewarmEnabled { return }
+            if alreadyAttached, ExperimentVariant.stickyPrewarmEnabled {
+                if singlePlayerView.playerLayer.isReadyForDisplay {
+                    singlePlayerView.alpha = 1.0
+                }
+                return
+            }
             attachedSlot = slot
             observeItemStatus(slot.player.currentItem, videoId: currentItem?.video.id)
             if singlePlayerView.playerLayer.player !== slot.player {
@@ -728,6 +733,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                         )
                     }
                     attach(slot: slot)
+                    if singlePlayerView.playerLayer.isReadyForDisplay {
+                        AVTelemetryTracker.shared.recordReadyForDisplay(for: item.video.id)
+                    }
                     FeedPlayerPool.shared.ensurePlaying(slot: slot, streamId: item.streamId)
 
                 case .prewarm:
