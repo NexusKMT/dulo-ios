@@ -1,13 +1,34 @@
-name: Build IPA
+name: Build experiment IPAs
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
 jobs:
   build:
+    name: build-${{ matrix.variant }}
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Same commit, three arms. Build number is the primary discriminator;
+          # every telemetry event also carries experiment_variant.
+          - variant: control
+            build: "32"
+            condition: ""
+            run_tests: true
+          - variant: prewarm
+            build: "33"
+            condition: "DULO_EXPERIMENT_PREWARM"
+            run_tests: false
+          - variant: audio
+            build: "34"
+            condition: "DULO_EXPERIMENT_AUDIO"
+            run_tests: false
     steps:
       - uses: actions/checkout@v7
 
@@ -35,7 +56,11 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Unit tests (simulator)
+      - name: Unit tests (control arm)
+        if: ${{ matrix.run_tests }}
+        env:
+          VARIANT_CONDITION: ${{ matrix.condition }}
+          BUILD_NUMBER: ${{ matrix.build }}
         run: |
           DEVICE_ID=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
           if [ -n "$DEVICE_ID" ]; then
@@ -43,25 +68,40 @@ jobs:
           else
             DEST="platform=iOS Simulator,name=iPhone 16"
           fi
+          SETTINGS=(CURRENT_PROJECT_VERSION="$BUILD_NUMBER")
+          if [ -n "$VARIANT_CONDITION" ]; then
+            SETTINGS+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS="$VARIANT_CONDITION")
+          fi
           echo "Testing on destination: $DEST"
           xcodebuild test -project Dulo.xcodeproj -scheme Dulo \
             -destination "$DEST" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            "${SETTINGS[@]}"
 
       - name: Archive (unsigned; TrollStore signs on install)
+        env:
+          VARIANT_CONDITION: ${{ matrix.condition }}
+          BUILD_NUMBER: ${{ matrix.build }}
         run: |
+          SETTINGS=(CURRENT_PROJECT_VERSION="$BUILD_NUMBER")
+          if [ -n "$VARIANT_CONDITION" ]; then
+            SETTINGS+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS="$VARIANT_CONDITION")
+          fi
           xcodebuild archive -project Dulo.xcodeproj -scheme Dulo \
             -destination 'generic/platform=iOS' \
-            -archivePath build/Dulo.xcarchive \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+            -archivePath "build/Dulo-${{ matrix.variant }}.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            "${SETTINGS[@]}"
 
       - name: Package IPA
         run: |
           mkdir -p Payload
-          cp -R build/Dulo.xcarchive/Products/Applications/Dulo.app Payload/
-          zip -r -X Dulo.ipa Payload
+          cp -R "build/Dulo-${{ matrix.variant }}.xcarchive/Products/Applications/Dulo.app" Payload/
+          zip -r -X "Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}.ipa" Payload
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Dulo.ipa
-          path: Dulo.ipa
+          name: Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}
+          path: Dulo-0.2.1-${{ matrix.build }}-${{ matrix.variant }}.ipa
+          if-no-files-found: error
+          retention-days: 14

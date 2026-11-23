@@ -817,6 +817,10 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         private var currentlyPinnedKeys: Set<String> = []
 
+        /// Prewarm-fix arm: keep the page we are settling on attached while
+        /// deceleration scroll callbacks continue to choose a secondary page.
+        private var settleTargetStreamId: Int64?
+
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
             self.viewModel = viewModel
@@ -920,6 +924,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             guard pageHeight > 0 else { return }
             let offsetY = scrollView.contentOffset.y
 
+            if ExperimentVariant.prewarmFixEnabled && scrollView.isDragging {
+                settleTargetStreamId = nil
+            }
+
             // 1. Precise Viewport Tracking
             let topIndex = max(0, Int(floor(offsetY / pageHeight)))
             let bottomIndex = min(store.items.count - 1, Int(floor((offsetY + pageHeight - 1.0) / pageHeight)))
@@ -955,6 +963,11 @@ struct VerticalPager: UIViewControllerRepresentable {
                 }
             }
 
+            if ExperimentVariant.prewarmFixEnabled,
+               let pendingTarget = settleTargetStreamId {
+                secondaryId = pendingTarget
+            }
+
             if store.prewarmStreamId != secondaryId {
                 store.prewarmStreamId = secondaryId
                 playbackStateChanged = true
@@ -988,9 +1001,18 @@ struct VerticalPager: UIViewControllerRepresentable {
                 cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
                 isCacheHit: isCached
             )
-            let nextPrewarmIndex = velocity.y < 0 ? targetIndex - 1 : targetIndex + 1
-            if nextPrewarmIndex >= 0 && nextPrewarmIndex < store.items.count {
-                store.prewarmStreamId = store.items[nextPrewarmIndex].streamId
+            if ExperimentVariant.prewarmFixEnabled {
+                // The page being settled on is visible during deceleration.
+                // Keep it as the prewarm owner so refreshPlayback() prepares
+                // it instead of detaching its player layer. The next page is
+                // promoted at settle time.
+                settleTargetStreamId = targetItem.streamId
+                store.prewarmStreamId = targetItem.streamId
+            } else {
+                let nextPrewarmIndex = velocity.y < 0 ? targetIndex - 1 : targetIndex + 1
+                if nextPrewarmIndex >= 0 && nextPrewarmIndex < store.items.count {
+                    store.prewarmStreamId = store.items[nextPrewarmIndex].streamId
+                }
             }
             refreshVisibleCells()
 
@@ -1041,7 +1063,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 FeedPlayerPool.shared.handlePageChanged()
                 let videoId = store.items[index].video.id
                 let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
-                AVTelemetryTracker.shared.recordSwipeTrigger(
+                AVTelemetryTracker.shared.recordPageSettled(
                     for: videoId,
                     cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
                     isCacheHit: isCached
@@ -1050,6 +1072,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             store.visibleStreamIds = [targetId]
             let nextIndex = index + 1
             store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
+            settleTargetStreamId = nil
 
             // Cancel stale preloads outside immediate [index - 1 ... index + 2] window
             var retainedKeys = Set<String>()

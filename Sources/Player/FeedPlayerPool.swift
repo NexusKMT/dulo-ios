@@ -275,6 +275,23 @@ public final class FeedPlayerPool {
     /// executes effects; it no longer decides whether BGM or a video wins.
     public func play(slot: PlayerSlot, streamId: Int64? = nil) {
         guard let streamId = streamId ?? slot.currentStreamId else { return }
+        if ExperimentVariant.audioFixEnabled,
+           audioFocus.owner == .video(streamId: streamId),
+           audioFocus.shouldPlay {
+            // Same owner: `prepare(autoplay: false)` has just paused the slot,
+            // so call play() directly instead of re-running the reducer and
+            // synchronously re-activating AVAudioSession on every refresh.
+            if currentPlayingSlot !== slot {
+                if slot === activeSlot {
+                    standbySlot.pause()
+                } else {
+                    activeSlot.pause()
+                }
+                currentPlayingSlot = slot
+            }
+            slot.play()
+            return
+        }
         applyAudio(.activateVideo(streamId: streamId), preferredSlot: slot)
     }
 
@@ -320,7 +337,11 @@ public final class FeedPlayerPool {
     ) {
         switch effect {
         case .activateSession:
-            PlayerFactory.activateAudioSession()
+            if ExperimentVariant.audioFixEnabled {
+                PlayerFactory.activateAudioSessionIfNeeded()
+            } else {
+                PlayerFactory.activateAudioSession()
+            }
 
         case .deactivateSession:
             PlayerFactory.deactivateAudioSession()
@@ -364,6 +385,9 @@ public final class FeedPlayerPool {
     }
 
     public func handleAppResignActive() {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.sceneInactive)
     }
 
@@ -385,10 +409,16 @@ public final class FeedPlayerPool {
     }
 
     public func handleAudioInterruptionBegan() {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.interruptionBegan)
     }
 
     public func handleAudioInterruptionEnded(shouldResume: Bool) {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.interruptionEnded(shouldResume: shouldResume))
         if shouldResume {
             healVideoAfterForeground()
@@ -396,6 +426,9 @@ public final class FeedPlayerPool {
     }
 
     public func handleAudioRouteLost() {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.routeLost)
     }
 
