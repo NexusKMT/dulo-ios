@@ -76,9 +76,32 @@ public final class AVTelemetryTracker: ObservableObject {
     // MARK: - TTFF Instrumentation
 
     /// Invoked the exact microsecond the user swipes or transitions to a streamId / video.
+    /// A real page change starts a new TTFF measurement.
     public func recordSwipeTrigger(for videoId: String, cacheTier: String, isCacheHit: Bool) {
-        let now = CACurrentMediaTime()
         lock.lock()
+        beginSessionLocked(for: videoId, cacheTier: cacheTier, isCacheHit: isCacheHit)
+        lock.unlock()
+    }
+
+    /// Invoked when the pager settles. This must not reset a session that was
+    /// already started by `scrollViewWillEndDragging`; doing so produced two
+    /// `video_startup_trace` events for one video and biased TTFF downward.
+    public func recordPageSettled(for videoId: String, cacheTier: String, isCacheHit: Bool) {
+        lock.lock()
+        if trackingSessions[videoId] == nil {
+            beginSessionLocked(for: videoId, cacheTier: cacheTier, isCacheHit: isCacheHit)
+        }
+        lock.unlock()
+    }
+
+    /// Test/instrumentation hook. Returns the monotonic trigger time for a video.
+    func trackingSessionStart(for videoId: String) -> CFTimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        return trackingSessions[videoId]?.triggerTime
+    }
+
+    private func beginSessionLocked(for videoId: String, cacheTier: String, isCacheHit: Bool) {
         let initial = VideoPlaybackTelemetry(
             videoId: videoId,
             ttffMs: 0.0,
@@ -86,12 +109,11 @@ public final class AVTelemetryTracker: ObservableObject {
             isCacheHit: isCacheHit
         )
         trackingSessions[videoId] = SessionState(
-            triggerTime: now,
+            triggerTime: CACurrentMediaTime(),
             cacheTier: cacheTier,
             isCacheHit: isCacheHit,
             telemetry: initial
         )
-        lock.unlock()
     }
 
     /// Binds an active AVPlayerItem to its videoId for access log event routing.

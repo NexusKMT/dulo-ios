@@ -35,6 +35,9 @@ public final class RemoteTelemetryExporter {
             enriched["build_number"] = AppVersion.buildNumber
             enriched["version_tag"] = AppVersion.displayString
             enriched["device_model"] = AppVersion.deviceModelIdentifier
+            for (key, value) in ExperimentVariant.telemetryFields {
+                enriched[key] = value
+            }
             #if canImport(UIKit)
             enriched["os_version"] = UIDevice.current.systemVersion
             #endif
@@ -97,6 +100,9 @@ public final class RemoteTelemetryExporter {
             "device_model": AppVersion.deviceModelIdentifier,
             "timestamp": Date().timeIntervalSince1970
         ]
+        for (key, value) in ExperimentVariant.telemetryFields {
+            payload[key] = value
+        }
         #if canImport(UIKit)
         payload["os_version"] = UIDevice.current.systemVersion
         #endif

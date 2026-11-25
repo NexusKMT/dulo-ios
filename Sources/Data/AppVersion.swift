@@ -8,11 +8,11 @@ import Darwin
 
 public enum AppVersion {
     public static let marketingVersion: String = {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.2.0"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.2.2"
     }()
 
     public static let buildNumber: String = {
-        (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "27"
+        (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "36"
     }()
 
     public static var displayString: String {

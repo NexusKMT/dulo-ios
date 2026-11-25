@@ -82,7 +82,7 @@ final class AudioFocusTests: XCTestCase {
         XCTAssertFalse(active.contains(.playVideo(streamId: 7)))
     }
 
-    func testInterruptionWithoutShouldResumeWaitsForUserPlay() {
+    func testInterruptionWithoutShouldResumeStaysPausedUntilUserIntent() {
         var state = AudioFocusState()
 
         _ = AudioFocusReducer.reduce(
@@ -96,15 +96,68 @@ final class AudioFocusTests: XCTestCase {
         )
         XCTAssertTrue(state.pauseReasons.contains(.interruption))
 
+        // Merely becoming active again is not user intent.
         let active = AudioFocusReducer.reduce(state: &state, event: .sceneActive)
         XCTAssertFalse(active.contains(.playVideo(streamId: 8)))
 
-        let userPlay = AudioFocusReducer.reduce(state: &state, event: .userPlay)
+        // A real foreground return is user intent.
+        let foreground = AudioFocusReducer.reduce(state: &state, event: .foregroundEntered)
         XCTAssertTrue(state.shouldPlay)
-        XCTAssertTrue(userPlay.contains(.playVideo(streamId: 8)))
+        XCTAssertTrue(foreground.contains(.playVideo(streamId: 8)))
     }
 
-    func testRouteLossRequiresExplicitUserPlay() {
+    func testPageChangeClearsStickySystemReasons() {
+        var state = AudioFocusState()
+
+        _ = AudioFocusReducer.reduce(
+            state: &state,
+            event: .activateVideo(streamId: 1)
+        )
+        _ = AudioFocusReducer.reduce(state: &state, event: .userPause)
+        _ = AudioFocusReducer.reduce(state: &state, event: .interruptionBegan)
+        _ = AudioFocusReducer.reduce(state: &state, event: .routeLost)
+        XCTAssertTrue(state.pauseReasons.contains(.user))
+        XCTAssertTrue(state.pauseReasons.contains(.interruption))
+        XCTAssertTrue(state.pauseReasons.contains(.routeChange))
+
+        let pageChanged = AudioFocusReducer.reduce(state: &state, event: .pageChanged)
+        XCTAssertEqual(state.owner, .idle)
+        XCTAssertTrue(state.pauseReasons.isEmpty)
+        XCTAssertTrue(pageChanged.contains(.pauseVideo))
+        XCTAssertTrue(pageChanged.contains(.stopBGM))
+
+        let next = AudioFocusReducer.reduce(
+            state: &state,
+            event: .activateVideo(streamId: 2)
+        )
+        XCTAssertTrue(state.shouldPlay)
+        XCTAssertTrue(next.contains(.playVideo(streamId: 2)))
+    }
+
+    func testForegroundEnteredClearsStickyButNotUser() {
+        var state = AudioFocusState()
+
+        _ = AudioFocusReducer.reduce(
+            state: &state,
+            event: .activateVideo(streamId: 3)
+        )
+        _ = AudioFocusReducer.reduce(state: &state, event: .userPause)
+        _ = AudioFocusReducer.reduce(state: &state, event: .interruptionBegan)
+        _ = AudioFocusReducer.reduce(state: &state, event: .routeLost)
+
+        let foreground = AudioFocusReducer.reduce(state: &state, event: .foregroundEntered)
+        XCTAssertTrue(state.pauseReasons.contains(.user))
+        XCTAssertFalse(state.pauseReasons.contains(.interruption))
+        XCTAssertFalse(state.pauseReasons.contains(.routeChange))
+        XCTAssertFalse(state.shouldPlay)
+        XCTAssertFalse(foreground.contains(.playVideo(streamId: 3)))
+
+        let userPlay = AudioFocusReducer.reduce(state: &state, event: .userPlay)
+        XCTAssertTrue(state.shouldPlay)
+        XCTAssertTrue(userPlay.contains(.playVideo(streamId: 3)))
+    }
+
+    func testRouteLossStaysPausedUntilUserIntent() {
         var state = AudioFocusState()
 
         _ = AudioFocusReducer.reduce(
@@ -117,9 +170,26 @@ final class AudioFocusTests: XCTestCase {
         let active = AudioFocusReducer.reduce(state: &state, event: .sceneActive)
         XCTAssertFalse(containsPlayBGM(active))
 
-        let userPlay = AudioFocusReducer.reduce(state: &state, event: .userPlay)
+        let routeBack = AudioFocusReducer.reduce(state: &state, event: .routeAvailable)
         XCTAssertTrue(state.shouldPlay)
-        XCTAssertTrue(containsPlayBGM(userPlay))
+        XCTAssertTrue(containsPlayBGM(routeBack))
+    }
+
+    func testRouteAvailableClearsOnlyRoute() {
+        var state = AudioFocusState()
+
+        _ = AudioFocusReducer.reduce(
+            state: &state,
+            event: .activateVideo(streamId: 10)
+        )
+        _ = AudioFocusReducer.reduce(state: &state, event: .interruptionBegan)
+        _ = AudioFocusReducer.reduce(state: &state, event: .routeLost)
+
+        let routeBack = AudioFocusReducer.reduce(state: &state, event: .routeAvailable)
+        XCTAssertTrue(state.pauseReasons.contains(.interruption))
+        XCTAssertFalse(state.pauseReasons.contains(.routeChange))
+        XCTAssertFalse(state.shouldPlay)
+        XCTAssertFalse(routeBack.contains(.playVideo(streamId: 10)))
     }
 
     func testGalleryWithoutBgmStopsLeftoverTrack() {

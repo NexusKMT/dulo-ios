@@ -41,6 +41,20 @@ enum PlayerFactory {
         #endif
     }
 
+    /// Audio-fix arm: avoid a synchronous `setActive(true)` on every cell
+    /// refresh. Interruptions invalidate the flag so the next playback still
+    /// re-activates the session.
+    static func activateAudioSessionIfNeeded() {
+        #if canImport(AVFAudio)
+        guard !isActive else { return }
+        activateAudioSession()
+        #endif
+    }
+
+    static func noteAudioSessionInterrupted() {
+        isActive = false
+    }
+
     /// Releases the session so other apps can resume their audio. Safe to call
     /// repeatedly; the next playback activates it again.
     static func deactivateAudioSession() {

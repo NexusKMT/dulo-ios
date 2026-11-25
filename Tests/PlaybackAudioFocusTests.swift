@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 
 #if canImport(UIKit)
+import AVFAudio
 @testable import Dulo
 
 /// Regression coverage for gallery BGM surviving a transition to video and
@@ -54,6 +55,67 @@ final class PlaybackAudioFocusTests: XCTestCase {
         XCTAssertNil(pool.bgmPlayer.currentUrl, "wake must not revive a previous gallery's BGM")
         XCTAssertFalse(pool.bgmPlayer.isPlaying)
         XCTAssertFalse(pool.userPaused)
+    }
+
+    @MainActor
+    func testSuspendedInterruptionDoesNotBecomeStickyPause() {
+        let pool = FeedPlayerPool.shared
+        let coordinator = PlaybackInterruptionCoordinator.shared
+
+        resetSharedPlaybackState()
+        defer { resetSharedPlaybackState() }
+
+        pool.play(slot: pool.activeSlot, streamId: 2)
+        XCTAssertEqual(pool.audioOwner, .video(streamId: 2))
+
+        let notification = Notification(
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            userInfo: [
+                AVAudioSessionInterruptionTypeKey: AudioSessionEventMapper.interruptionTypeBegan,
+                AVAudioSessionInterruptionReasonKey: AudioSessionEventMapper.interruptionReasonAppWasSuspended
+            ]
+        )
+        coordinator.handleAudioInterruption(notification: notification)
+
+        XCTAssertFalse(pool.hasSystemPauseReason)
+        XCTAssertFalse(coordinator.pausedByInterruption)
+    }
+
+    @MainActor
+    func testRouteLossAndReturnClearsOnlyRoutePause() {
+        let pool = FeedPlayerPool.shared
+        let coordinator = PlaybackInterruptionCoordinator.shared
+
+        resetSharedPlaybackState()
+        defer { resetSharedPlaybackState() }
+
+        pool.play(slot: pool.activeSlot, streamId: 2)
+        XCTAssertEqual(pool.audioOwner, .video(streamId: 2))
+
+        coordinator.handleAudioRouteChange(
+            notification: Notification(
+                name: AVAudioSession.routeChangeNotification,
+                object: AVAudioSession.sharedInstance(),
+                userInfo: [
+                    AVAudioSessionRouteChangeReasonKey: AudioSessionEventMapper.routeReasonOldDeviceUnavailable
+                ]
+            )
+        )
+        XCTAssertTrue(pool.hasSystemPauseReason)
+        XCTAssertTrue(coordinator.pausedByInterruption)
+
+        coordinator.handleAudioRouteChange(
+            notification: Notification(
+                name: AVAudioSession.routeChangeNotification,
+                object: AVAudioSession.sharedInstance(),
+                userInfo: [
+                    AVAudioSessionRouteChangeReasonKey: AudioSessionEventMapper.routeReasonNewDeviceAvailable
+                ]
+            )
+        )
+        XCTAssertFalse(pool.hasSystemPauseReason)
+        XCTAssertFalse(coordinator.pausedByInterruption)
     }
 }
 #endif

@@ -60,6 +60,14 @@ public final class FeedPlayerPool {
             }
         }
 
+        public func isReusable(streamId: Int64, playUrl: String) -> Bool {
+            currentStreamId == streamId
+                && currentPlayUrl == playUrl
+                && player.currentItem != nil
+                && player.currentItem?.status != .failed
+                && player.error == nil
+        }
+
         public func prepare(
             streamId: Int64,
             videoId: String,
@@ -72,20 +80,18 @@ public final class FeedPlayerPool {
             let effectiveMuted = isMuted || disableAudioTracks
             setMuted(effectiveMuted)
 
-            if currentStreamId == streamId && currentPlayUrl == playUrl && player.currentItem != nil {
-                if player.currentItem?.status == .failed || player.error != nil {
-                    // Item failed (e.g. proxy severed during lock screen); fall through to recreate
+            if isReusable(streamId: streamId, playUrl: playUrl) {
+                FeedPlayerPool.notePrepareReuse(pausing: !autoplay)
+                if autoplay {
+                    player.play()
                 } else {
-                    if autoplay {
-                        player.play()
-                    } else {
-                        player.pause()
-                    }
-                    return
+                    player.pause()
                 }
+                return
             }
 
             clear()
+            FeedPlayerPool.notePrepareNewItem()
 
             currentStreamId = streamId
             currentVideoId = videoId
@@ -133,7 +139,9 @@ public final class FeedPlayerPool {
             currentStreamId = nil
             currentVideoId = nil
             currentPlayUrl = nil
+            let hadItem = player.currentItem != nil
             player.pause()
+            if hadItem { FeedPlayerPool.noteSlotClear() }
             if let item = player.currentItem {
                 AVTelemetryTracker.shared.unbindItem(item)
             }
@@ -250,6 +258,53 @@ public final class FeedPlayerPool {
     public var hasSystemPauseReason: Bool { audioFocus.hasSystemPauseReason }
     public var shouldPlayAudio: Bool { audioFocus.shouldPlay }
 
+    /// Counters for one drag window. They deliberately omit timings: the
+    /// interesting signal is whether a micro-drag creates a new player item or
+    /// clears a slot at all.
+    public struct DragCounters: Equatable {
+        public var prepareNewItem = 0
+        public var prepareReuse = 0
+        public var prepareReusePause = 0
+        public var slotClears = 0
+        public var layerAttachChanged = 0
+        public var layerDetach = 0
+
+        public init() {}
+    }
+
+    private static var dragCounters = DragCounters()
+
+    public static func resetDragCounters() {
+        dragCounters = DragCounters()
+    }
+
+    public static func snapshotAndResetDragCounters() -> DragCounters {
+        let snapshot = dragCounters
+        dragCounters = DragCounters()
+        return snapshot
+    }
+
+    static func notePrepareNewItem() {
+        dragCounters.prepareNewItem += 1
+    }
+
+    static func notePrepareReuse(pausing: Bool) {
+        dragCounters.prepareReuse += 1
+        if pausing { dragCounters.prepareReusePause += 1 }
+    }
+
+    static func noteSlotClear() {
+        dragCounters.slotClears += 1
+    }
+
+    static func noteLayerAttachChanged() {
+        dragCounters.layerAttachChanged += 1
+    }
+
+    static func noteLayerDetach() {
+        dragCounters.layerDetach += 1
+    }
+
     /// Dynamic symmetric 2-decoder allocation adhering to TikTok/Douyin Ping-Pong architecture.
     /// Preserves existing playback session when transitioning between active and prewarm states,
     /// completely eliminating video layer teardown, buffer re-fetches, and black screen flicker.
@@ -275,6 +330,46 @@ public final class FeedPlayerPool {
     /// executes effects; it no longer decides whether BGM or a video wins.
     public func play(slot: PlayerSlot, streamId: Int64? = nil) {
         guard let streamId = streamId ?? slot.currentStreamId else { return }
+        if ExperimentVariant.audioFixEnabled,
+           audioFocus.owner == .video(streamId: streamId),
+           audioFocus.shouldPlay {
+            // Same owner: `prepare(autoplay: false)` has just paused the slot,
+            // so call play() directly instead of re-running the reducer and
+            // synchronously re-activating AVAudioSession on every refresh.
+            if currentPlayingSlot !== slot {
+                if slot === activeSlot {
+                    standbySlot.pause()
+                } else {
+                    activeSlot.pause()
+                }
+                currentPlayingSlot = slot
+            }
+            slot.play()
+            return
+        }
+        applyAudio(.activateVideo(streamId: streamId), preferredSlot: slot)
+    }
+
+    /// Idempotent active-page entry. A role refresh must not pause and replay
+    /// the same item just because the cell became visible again.
+    public func ensurePlaying(slot: PlayerSlot, streamId: Int64? = nil) {
+        guard let streamId = streamId ?? slot.currentStreamId else { return }
+        if audioFocus.owner == .video(streamId: streamId), audioFocus.shouldPlay {
+            if currentPlayingSlot === slot {
+                if slot.player.timeControlStatus == .paused {
+                    slot.play()
+                }
+                return
+            }
+            if slot === activeSlot {
+                standbySlot.pause()
+            } else {
+                activeSlot.pause()
+            }
+            currentPlayingSlot = slot
+            slot.play()
+            return
+        }
         applyAudio(.activateVideo(streamId: streamId), preferredSlot: slot)
     }
 
@@ -320,7 +415,11 @@ public final class FeedPlayerPool {
     ) {
         switch effect {
         case .activateSession:
-            PlayerFactory.activateAudioSession()
+            if ExperimentVariant.audioFixEnabled {
+                PlayerFactory.activateAudioSessionIfNeeded()
+            } else {
+                PlayerFactory.activateAudioSession()
+            }
 
         case .deactivateSession:
             PlayerFactory.deactivateAudioSession()
@@ -364,7 +463,18 @@ public final class FeedPlayerPool {
     }
 
     public func handleAppResignActive() {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.sceneInactive)
+    }
+
+    public func handleForegroundEntered() {
+        // A real background -> foreground transition is explicit user intent.
+        // Restore the proxy before the reducer replays the current owner, so a
+        // socket that died while suspended cannot be reused.
+        LocalMediaProxyServer.shared.ensureRunning()
+        applyAudio(.foregroundEntered)
     }
 
     public func handleAppBecomeActive() {
@@ -377,10 +487,16 @@ public final class FeedPlayerPool {
     }
 
     public func handleAudioInterruptionBegan() {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.interruptionBegan)
     }
 
     public func handleAudioInterruptionEnded(shouldResume: Bool) {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.interruptionEnded(shouldResume: shouldResume))
         if shouldResume {
             healVideoAfterForeground()
@@ -388,7 +504,17 @@ public final class FeedPlayerPool {
     }
 
     public func handleAudioRouteLost() {
+        if ExperimentVariant.audioFixEnabled {
+            PlayerFactory.noteAudioSessionInterrupted()
+        }
         applyAudio(.routeLost)
+    }
+
+    public func handleAudioRouteAvailable() {
+        applyAudio(.routeAvailable)
+        if audioFocus.shouldPlay {
+            healVideoAfterForeground()
+        }
     }
 
     public func setUserPaused(_ paused: Bool) {

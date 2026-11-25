@@ -1,12 +1,15 @@
 name: Build IPA
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
 jobs:
   build:
+    name: build-ipa
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -19,13 +22,13 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           BASE_BUILD=$(git show "origin/$BASE_REF:project.yml" | awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}')
           HEAD_BUILD=$(awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}' project.yml)
-          echo "main build: $BASE_BUILD; PR build: $HEAD_BUILD"
+          echo "base build: $BASE_BUILD; PR build: $HEAD_BUILD"
           if [ -z "$BASE_BUILD" ] || [ -z "$HEAD_BUILD" ]; then
             echo "::error::Could not read CURRENT_PROJECT_VERSION from project.yml"
             exit 1
           fi
           if [ "$HEAD_BUILD" -le "$BASE_BUILD" ]; then
-            echo "::error::CURRENT_PROJECT_VERSION must be incremented for every change (main=$BASE_BUILD, PR=$HEAD_BUILD)"
+            echo "::error::CURRENT_PROJECT_VERSION must be incremented for every change (base=$BASE_BUILD, PR=$HEAD_BUILD)"
             exit 1
           fi
 
@@ -35,7 +38,7 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Unit tests (simulator)
+      - name: Unit tests
         run: |
           DEVICE_ID=$(xcrun simctl list devices available | grep -E "iPhone" | head -n 1 | sed -E 's/.*\(([A-F0-9-]+)\).*/\1/')
           if [ -n "$DEVICE_ID" ]; then
@@ -52,16 +55,26 @@ jobs:
         run: |
           xcodebuild archive -project Dulo.xcodeproj -scheme Dulo \
             -destination 'generic/platform=iOS' \
-            -archivePath build/Dulo.xcarchive \
+            -archivePath "build/Dulo-sticky.xcarchive" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
 
       - name: Package IPA
+        id: package
         run: |
+          BUILD=$(awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}' project.yml)
+          MARKETING=$(awk '/MARKETING_VERSION/ {gsub(/[^0-9.]/, "", $2); print $2; exit}' project.yml)
           mkdir -p Payload
-          cp -R build/Dulo.xcarchive/Products/Applications/Dulo.app Payload/
-          zip -r -X Dulo.ipa Payload
+          cp -R "build/Dulo-sticky.xcarchive/Products/Applications/Dulo.app" Payload/
+          zip -r -X "Dulo-${MARKETING}-${BUILD}.ipa" Payload
+          cp "Dulo-${MARKETING}-${BUILD}.ipa" "Dulo.ipa"
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "version=${MARKETING}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Dulo.ipa
-          path: Dulo.ipa
+          name: Dulo
+          path: |
+            Dulo-*.ipa
+            Dulo.ipa
+          if-no-files-found: error
+          retention-days: 14

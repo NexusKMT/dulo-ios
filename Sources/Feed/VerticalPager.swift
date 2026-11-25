@@ -3,6 +3,7 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 import AVFoundation
+import QuartzCore
 
 /// Vertical full-page pager (TikTok/Douyin architecture) backed by UICollectionView with paging.
 /// Unifies Vertical Video Stream and Horizontal Live Photo / Image Gallery with 100% conceptual integrity:
@@ -254,6 +255,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         private var itemFailureObserver: NSObjectProtocol?
         private weak var observedItem: AVPlayerItem?
         private var isRecoveringLease = false
+        private(set) var appliedRole: CellRole?
 
         private var currentSlides: [GallerySlide] = []
         private var currentSlideUrls: [URL] = []
@@ -355,6 +357,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentViewModel = nil
             currentStore = nil
             isRecoveringLease = false
+            appliedRole = nil
 
             if !currentSlideUrls.isEmpty {
                 ImagePipeline.shared.unpin(urls: currentSlideUrls)
@@ -382,8 +385,10 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func detachPlayer() {
+            let hadAttachment = attachedSlot != nil || singlePlayerView.playerLayer.player != nil
             attachedSlot = nil
             clearItemObservers()
+            if hadAttachment { FeedPlayerPool.noteLayerDetach() }
             singlePlayerView.resetDetachedPlayer()
             singlePlayerView.playerLayer.player = nil
             singlePlayerView.alpha = 0.0
@@ -392,10 +397,20 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         func attach(slot: FeedPlayerPool.PlayerSlot) {
             guard singlePlayerView.isHidden == false else { return }
+            let alreadyAttached = attachedSlot === slot
+                && singlePlayerView.playerLayer.player === slot.player
+                && observedItem === slot.player.currentItem
+            if alreadyAttached, ExperimentVariant.stickyPrewarmEnabled {
+                if singlePlayerView.playerLayer.isReadyForDisplay {
+                    singlePlayerView.alpha = 1.0
+                }
+                return
+            }
             attachedSlot = slot
             observeItemStatus(slot.player.currentItem, videoId: currentItem?.video.id)
             if singlePlayerView.playerLayer.player !== slot.player {
                 singlePlayerView.playerLayer.player = slot.player
+                FeedPlayerPool.noteLayerAttachChanged()
             }
             if singlePlayerView.playerLayer.isReadyForDisplay {
                 singlePlayerView.alpha = 1.0
@@ -421,10 +436,16 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentItem = item
             currentViewModel = viewModel
             currentStore = store
+            if ExperimentVariant.stickyPrewarmEnabled,
+               let attached = attachedSlot,
+               attached.currentStreamId != item.streamId {
+                detachPlayer()
+            }
             leaseRenewalTask?.cancel()
             leaseRenewalTask = nil
             clearItemObservers()
             isRecoveringLease = false
+            appliedRole = nil
             let streamId = item.streamId
             let video = item.video
 
@@ -601,6 +622,16 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
         }
         func refreshPlayback(store: FeedStreamStore, gravity: AVLayerVideoGravity = .resizeAspect) {
+            if ExperimentVariant.stickyPrewarmEnabled {
+                guard let item = currentItem else { return }
+                let role = CellRole.of(
+                    streamId: item.streamId,
+                    active: store.activeStreamId,
+                    prewarm: store.prewarmStreamId
+                )
+                applyRole(role, store: store, gravity: gravity)
+                return
+            }
             guard let item = currentItem else { return }
             let isActive = (store.activeStreamId == item.streamId)
             let isPrewarm = (store.prewarmStreamId == item.streamId)
@@ -669,6 +700,95 @@ struct VerticalPager: UIViewControllerRepresentable {
             case .unconfigured:
                 break
             }
+        }
+
+        /// Sticky arm: apply a role only when it actually changes. The control
+        /// arm keeps the old `refreshPlayback` behaviour so the two runtime
+        /// arms differ by one variable.
+        func applyRole(
+            _ role: CellRole,
+            store: FeedStreamStore,
+            gravity: AVLayerVideoGravity = .resizeAspect
+        ) {
+            guard let item = currentItem else { return }
+
+            switch cellMode {
+            case .video(let playUrl):
+                switch role {
+                case .active:
+                    let slot = FeedPlayerPool.shared.acquireSlot(
+                        for: item.streamId,
+                        visibleStreamIds: store.visibleStreamIds
+                    )
+                    if slot.isReusable(streamId: item.streamId, playUrl: playUrl) {
+                        slot.setMuted(false)
+                    } else {
+                        slot.prepare(
+                            streamId: item.streamId,
+                            videoId: item.video.id,
+                            playUrl: playUrl,
+                            isMuted: false,
+                            autoplay: false,
+                            videoGravity: gravity
+                        )
+                    }
+                    attach(slot: slot)
+                    if singlePlayerView.playerLayer.isReadyForDisplay {
+                        AVTelemetryTracker.shared.recordReadyForDisplay(for: item.video.id)
+                    }
+                    FeedPlayerPool.shared.ensurePlaying(slot: slot, streamId: item.streamId)
+
+                case .prewarm:
+                    let slot = FeedPlayerPool.shared.acquireSlot(
+                        for: item.streamId,
+                        visibleStreamIds: store.visibleStreamIds
+                    )
+                    if slot.isReusable(streamId: item.streamId, playUrl: playUrl) {
+                        slot.setMuted(true)
+                        slot.pause()
+                    } else {
+                        slot.prepare(
+                            streamId: item.streamId,
+                            videoId: item.video.id,
+                            playUrl: playUrl,
+                            isMuted: true,
+                            autoplay: false,
+                            videoGravity: gravity
+                        )
+                    }
+                    attach(slot: slot)
+
+                case .none:
+                    if attachedSlot != nil || singlePlayerView.playerLayer.player != nil {
+                        detachPlayer()
+                    }
+                }
+
+            case .gallery:
+                switch role {
+                case .active:
+                    FeedPlayerPool.shared.activateGallery(
+                        streamId: item.streamId,
+                        bgmURL: currentBgmUrl.flatMap(URL.init(string:))
+                    )
+                    scheduleMotionPlay(at: currentSlideIndex)
+                case .prewarm:
+                    if let first = currentSlideUrls.first {
+                        ImagePipeline.shared.prefetch(urls: [first])
+                    }
+                case .none:
+                    motionDebounceTask?.cancel()
+                    if let cv = horizontalCollectionView,
+                       let cell = cv.cellForItem(at: IndexPath(item: currentSlideIndex, section: 0)) as? GallerySlideCell {
+                        cell.detachMotion()
+                    }
+                }
+
+            case .unconfigured:
+                break
+            }
+
+            appliedRole = role
         }
 
         // MARK: - Live Photo Momentum Debounce
@@ -817,6 +937,23 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         private var currentlyPinnedKeys: Set<String> = []
 
+        /// Sticky arm anchor and hysteresis direction. Control never reads these.
+        private var prewarmAnchorIndex = 0
+        private var prewarmDirection: PrewarmDirection = .next
+
+        private var dragStartTime: CFTimeInterval?
+        private var dragStartOffsetPages: Double = 0
+        private var dragEndOffsetPages: Double = 0
+        private var dragMaxAbsDeltaPages: Double = 0
+        private var dragDirectionReversals = 0
+        private var dragLastSign = 0
+        private var dragStartActiveStreamId: Int64 = 0
+        private var dragPrewarmSwitches = 0
+        private var dragRefreshCalls = 0
+        private var dragApplyRoleCalls = 0
+        private var dragPrefetchCalls = 0
+        private var dragCancelPrefetchCalls = 0
+
         init(store: FeedStreamStore, viewModel: FeedViewModel) {
             self.store = store
             self.viewModel = viewModel
@@ -866,12 +1003,19 @@ struct VerticalPager: UIViewControllerRepresentable {
             forItemAt indexPath: IndexPath
         ) {
             guard let feedCell = cell as? FeedVideoCell else { return }
+            if ExperimentVariant.stickyPrewarmEnabled,
+               feedCell.currentItem?.streamId == store.prewarmStreamId {
+                // Keep the prepared neighbour attached while it is just
+                // outside the viewport; the next micro-drag must not re-bind.
+                return
+            }
             feedCell.detachPlayer()
         }
 
         // MARK: - UICollectionViewDataSourcePrefetching
 
         func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+            dragPrefetchCalls += indexPaths.count
             for indexPath in indexPaths {
                 let index = indexPath.item
                 guard index >= 0, index < store.items.count else { continue }
@@ -904,6 +1048,7 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
+            dragCancelPrefetchCalls += indexPaths.count
             for indexPath in indexPaths {
                 let index = indexPath.item
                 guard index >= 0, index < store.items.count else { continue }
@@ -914,13 +1059,41 @@ struct VerticalPager: UIViewControllerRepresentable {
 
         // MARK: - Scroll & Single-Player Page Settling
 
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            guard !store.items.isEmpty else { return }
+            finishDragWindow()
+
+            let pageHeight = scrollView.bounds.height
+            guard pageHeight > 0 else { return }
+            let offsetY = scrollView.contentOffset.y
+            if let activeIndex = store.items.firstIndex(where: { $0.streamId == store.activeStreamId }) {
+                prewarmAnchorIndex = activeIndex
+            } else {
+                prewarmAnchorIndex = max(0, min(store.items.count - 1, Int(round(offsetY / pageHeight))))
+            }
+            prewarmDirection = .next
+
+            dragStartTime = CACurrentMediaTime()
+            dragStartOffsetPages = Double(offsetY / pageHeight)
+            dragEndOffsetPages = dragStartOffsetPages
+            dragMaxAbsDeltaPages = 0
+            dragDirectionReversals = 0
+            dragLastSign = 0
+            dragStartActiveStreamId = store.activeStreamId
+            dragPrewarmSwitches = 0
+            dragRefreshCalls = 0
+            dragApplyRoleCalls = 0
+            dragPrefetchCalls = 0
+            dragCancelPrefetchCalls = 0
+            FeedPlayerPool.resetDragCounters()
+        }
+
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
             guard !store.items.isEmpty else { return }
             let pageHeight = scrollView.bounds.height
             guard pageHeight > 0 else { return }
             let offsetY = scrollView.contentOffset.y
 
-            // 1. Precise Viewport Tracking
             let topIndex = max(0, Int(floor(offsetY / pageHeight)))
             let bottomIndex = min(store.items.count - 1, Int(floor((offsetY + pageHeight - 1.0) / pageHeight)))
             var visibleIds: Set<Int64> = []
@@ -929,13 +1102,25 @@ struct VerticalPager: UIViewControllerRepresentable {
                     visibleIds.insert(store.items[i].streamId)
                 }
             }
-            var playbackStateChanged = false
-            if store.visibleStreamIds != visibleIds {
+            let visibleChanged = store.visibleStreamIds != visibleIds
+            if visibleChanged {
                 store.visibleStreamIds = visibleIds
-                playbackStateChanged = true
             }
+            updateDragMetrics(offsetY: offsetY, pageHeight: pageHeight)
 
-            // 2. Prewarm upcoming cell (paused first frame for zero black flash)
+            if ExperimentVariant.stickyPrewarmEnabled {
+                updateStickyPrewarm(
+                    offsetY: offsetY,
+                    pageHeight: pageHeight,
+                    velocityY: Double(scrollView.panGestureRecognizer.velocity(in: scrollView).y),
+                    isDragging: scrollView.isDragging
+                )
+                return
+            }
+            var playbackStateChanged = visibleChanged
+
+            // Control arm: preserve build 32's visible-set selection. A 1 pt
+            // move changes the visible pair and therefore flips N-1/N+1.
             let currentIndex = max(0, min(store.items.count - 1, Int(round(offsetY / pageHeight))))
             var secondaryId: Int64? = nil
             if visibleIds.count > 1 {
@@ -956,16 +1141,56 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
 
             if store.prewarmStreamId != secondaryId {
+                notePrewarmSwitch(
+                    from: store.prewarmStreamId,
+                    to: secondaryId,
+                    reason: "visible_change",
+                    deltaPages: Double(offsetY / pageHeight) - Double(prewarmAnchorIndex),
+                    velocityY: Double(scrollView.panGestureRecognizer.velocity(in: scrollView).y),
+                    isDragging: scrollView.isDragging
+                )
                 store.prewarmStreamId = secondaryId
                 playbackStateChanged = true
             }
-
-            // Do not touch playback state on every scroll callback. The reducer
-            // is idempotent for the same owner, but repeated layer reattach is
-            // still unnecessary work while the same page is on screen.
             if playbackStateChanged {
                 refreshVisibleCells()
             }
+        }
+
+        private func updateStickyPrewarm(
+            offsetY: CGFloat,
+            pageHeight: CGFloat,
+            velocityY: Double,
+            isDragging: Bool
+        ) {
+            let deltaPages = Double(offsetY / pageHeight) - Double(prewarmAnchorIndex)
+            let newDirection = PrewarmPolicy.direction(
+                current: prewarmDirection,
+                deltaPages: deltaPages
+            )
+            let oldDirection = prewarmDirection
+            prewarmDirection = newDirection
+
+            let targetIndex = PrewarmPolicy.targetIndex(
+                anchor: prewarmAnchorIndex,
+                direction: newDirection,
+                count: store.items.count
+            )
+            let newPrewarm = targetIndex.map { store.items[$0].streamId }
+            if store.prewarmStreamId != newPrewarm {
+                notePrewarmSwitch(
+                    from: store.prewarmStreamId,
+                    to: newPrewarm,
+                    fromDirection: oldDirection,
+                    toDirection: newDirection,
+                    reason: "scroll_threshold",
+                    deltaPages: deltaPages,
+                    velocityY: velocityY,
+                    isDragging: isDragging
+                )
+                store.prewarmStreamId = newPrewarm
+            }
+            applyRolesIfChanged()
         }
 
         func scrollViewWillEndDragging(
@@ -988,11 +1213,48 @@ struct VerticalPager: UIViewControllerRepresentable {
                 cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
                 isCacheHit: isCached
             )
-            let nextPrewarmIndex = velocity.y < 0 ? targetIndex - 1 : targetIndex + 1
-            if nextPrewarmIndex >= 0 && nextPrewarmIndex < store.items.count {
-                store.prewarmStreamId = store.items[nextPrewarmIndex].streamId
+            if ExperimentVariant.stickyPrewarmEnabled {
+                let newDirection: PrewarmDirection = targetIndex < prewarmAnchorIndex ? .previous : .next
+                let oldDirection = prewarmDirection
+                prewarmDirection = newDirection
+                let target = PrewarmPolicy.targetIndex(
+                    anchor: prewarmAnchorIndex,
+                    direction: newDirection,
+                    count: store.items.count
+                )
+                let newPrewarm = target.map { store.items[$0].streamId }
+                if store.prewarmStreamId != newPrewarm {
+                    notePrewarmSwitch(
+                        from: store.prewarmStreamId,
+                        to: newPrewarm,
+                        fromDirection: oldDirection,
+                        toDirection: newDirection,
+                        reason: "will_end_target",
+                        deltaPages: Double(targetContentOffset.pointee.y / pageHeight) - Double(prewarmAnchorIndex),
+                        velocityY: Double(velocity.y),
+                        isDragging: false
+                    )
+                    store.prewarmStreamId = newPrewarm
+                }
+                applyRolesIfChanged()
+            } else {
+                let nextPrewarmIndex = velocity.y < 0 ? targetIndex - 1 : targetIndex + 1
+                if nextPrewarmIndex >= 0 && nextPrewarmIndex < store.items.count {
+                    let newPrewarm = store.items[nextPrewarmIndex].streamId
+                    if store.prewarmStreamId != newPrewarm {
+                        notePrewarmSwitch(
+                            from: store.prewarmStreamId,
+                            to: newPrewarm,
+                            reason: "will_end_target",
+                            deltaPages: Double(targetContentOffset.pointee.y / pageHeight) - Double(prewarmAnchorIndex),
+                            velocityY: Double(velocity.y),
+                            isDragging: false
+                        )
+                        store.prewarmStreamId = newPrewarm
+                    }
+                }
+                refreshVisibleCells()
             }
-            refreshVisibleCells()
 
             // Velocity Gating (Doom-Scrolling Protection):
             // If user is flicking rapidly past multiple videos, cancel stale preloads and do NOT waste video chunk bandwidth!
@@ -1007,22 +1269,41 @@ struct VerticalPager: UIViewControllerRepresentable {
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             if !decelerate {
                 confirmSettledPage(scrollView)
+                finishDragWindow()
             }
         }
 
         func refreshVisibleCells() {
+            dragRefreshCalls += 1
             guard let collectionView = controller?.collectionView else { return }
             for cell in collectionView.visibleCells.compactMap({ $0 as? FeedVideoCell }) {
                 cell.refreshPlayback(store: store)
             }
         }
 
+        func applyRolesIfChanged() {
+            guard let collectionView = controller?.collectionView else { return }
+            for cell in collectionView.visibleCells.compactMap({ $0 as? FeedVideoCell }) {
+                guard let item = cell.currentItem else { continue }
+                let role = CellRole.of(
+                    streamId: item.streamId,
+                    active: store.activeStreamId,
+                    prewarm: store.prewarmStreamId
+                )
+                guard cell.appliedRole != role else { continue }
+                cell.applyRole(role, store: store)
+                dragApplyRoleCalls += 1
+            }
+        }
+
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
             confirmSettledPage(scrollView)
+            finishDragWindow()
         }
 
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
             confirmSettledPage(scrollView)
+            finishDragWindow()
         }
 
         private func confirmSettledPage(_ scrollView: UIScrollView) {
@@ -1041,7 +1322,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 FeedPlayerPool.shared.handlePageChanged()
                 let videoId = store.items[index].video.id
                 let isCached = MediaCacheStorage.shared.metadata(for: "k_\(videoId)")?.cachedBytes ?? 0 > 0
-                AVTelemetryTracker.shared.recordSwipeTrigger(
+                AVTelemetryTracker.shared.recordPageSettled(
                     for: videoId,
                     cacheTier: isCached ? "L2_FLASH" : "WAN_CDN",
                     isCacheHit: isCached
@@ -1049,7 +1330,34 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
             store.visibleStreamIds = [targetId]
             let nextIndex = index + 1
-            store.prewarmStreamId = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
+            let nextPrewarm = (nextIndex < store.items.count) ? store.items[nextIndex].streamId : nil
+            if ExperimentVariant.stickyPrewarmEnabled {
+                prewarmAnchorIndex = index
+                prewarmDirection = .next
+                if store.prewarmStreamId != nextPrewarm {
+                    notePrewarmSwitch(
+                        from: store.prewarmStreamId,
+                        to: nextPrewarm,
+                        reason: "settle",
+                        deltaPages: 0,
+                        velocityY: 0,
+                        isDragging: false
+                    )
+                    store.prewarmStreamId = nextPrewarm
+                }
+            } else {
+                if store.prewarmStreamId != nextPrewarm {
+                    notePrewarmSwitch(
+                        from: store.prewarmStreamId,
+                        to: nextPrewarm,
+                        reason: "settle",
+                        deltaPages: 0,
+                        velocityY: 0,
+                        isDragging: false
+                    )
+                    store.prewarmStreamId = nextPrewarm
+                }
+            }
 
             // Cancel stale preloads outside immediate [index - 1 ... index + 2] window
             var retainedKeys = Set<String>()
@@ -1074,8 +1382,85 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentlyPinnedKeys = newPinnedKeys
 
             store.appendNextIfNeeded(near: index)
-            refreshVisibleCells()
+            if ExperimentVariant.stickyPrewarmEnabled {
+                applyRolesIfChanged()
+            } else {
+                refreshVisibleCells()
+            }
             preloadAhead(from: index)
+        }
+
+        private func updateDragMetrics(offsetY: CGFloat, pageHeight: CGFloat) {
+            guard dragStartTime != nil else { return }
+            let pages = Double(offsetY / pageHeight)
+            dragEndOffsetPages = pages
+            let delta = pages - dragStartOffsetPages
+            dragMaxAbsDeltaPages = max(dragMaxAbsDeltaPages, abs(delta))
+
+            let sign = delta > 0.01 ? 1 : (delta < -0.01 ? -1 : 0)
+            guard sign != 0 else { return }
+            if dragLastSign != 0 && sign != dragLastSign {
+                dragDirectionReversals += 1
+            }
+            dragLastSign = sign
+        }
+
+        private func notePrewarmSwitch(
+            from: Int64?,
+            to: Int64?,
+            fromDirection: PrewarmDirection? = nil,
+            toDirection: PrewarmDirection? = nil,
+            reason: String,
+            deltaPages: Double,
+            velocityY: Double,
+            isDragging: Bool
+        ) {
+            guard from != to else { return }
+            if dragStartTime != nil {
+                dragPrewarmSwitches += 1
+            }
+
+            var event: [String: Any] = [
+                "event_type": "prewarm_switch",
+                "reason": reason,
+                "delta_pages": deltaPages,
+                "velocity_y": velocityY,
+                "is_dragging": isDragging,
+                "anchor_index": prewarmAnchorIndex
+            ]
+            if let from { event["from_sid"] = from }
+            if let to { event["to_sid"] = to }
+            if let fromDirection { event["from_direction"] = fromDirection.rawValue }
+            if let toDirection { event["to_direction"] = toDirection.rawValue }
+            RemoteTelemetryExporter.shared.submit(event: event)
+        }
+
+        private func finishDragWindow() {
+            guard let start = dragStartTime else { return }
+            dragStartTime = nil
+            let counters = FeedPlayerPool.snapshotAndResetDragCounters()
+            let durationMs = (CACurrentMediaTime() - start) * 1000.0
+            RemoteTelemetryExporter.shared.submit(event: [
+                "event_type": "drag_window",
+                "duration_ms": durationMs,
+                "start_pages": dragStartOffsetPages,
+                "end_pages": dragEndOffsetPages,
+                "max_abs_delta_pages": dragMaxAbsDeltaPages,
+                "direction_reversals": dragDirectionReversals,
+                "prewarm_switches": dragPrewarmSwitches,
+                "refresh_calls": dragRefreshCalls,
+                "apply_role_calls": dragApplyRoleCalls,
+                "prefetch_calls": dragPrefetchCalls,
+                "cancel_prefetch_calls": dragCancelPrefetchCalls,
+                "prepare_new_item": counters.prepareNewItem,
+                "prepare_reuse": counters.prepareReuse,
+                "prepare_reuse_pause": counters.prepareReusePause,
+                "slot_clears": counters.slotClears,
+                "layer_attach_changed": counters.layerAttachChanged,
+                "layer_detach": counters.layerDetach,
+                "settled_page_changed": store.activeStreamId != dragStartActiveStreamId,
+                "anchor_index": prewarmAnchorIndex
+            ])
         }
 
         func preloadAhead(from index: Int) {

@@ -10,7 +10,7 @@ let package = Package(
         .target(
             name: "DuloCore",
             path: "Sources",
-            sources: ["Data", "Feed/ShuffledVideoQueue.swift"]
+            sources: ["Data", "Feed/ShuffledVideoQueue.swift", "Feed/PrewarmPolicy.swift"]
         ),
         .testTarget(
             name: "DuloCoreTests",

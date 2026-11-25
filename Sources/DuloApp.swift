@@ -35,6 +35,8 @@ struct DuloApp: App {
             )
         }
         #endif
+        // Must run before LocalMediaProxyServer touches MediaCacheStorage.
+        ExperimentVariant.bootstrap()
         PlayerFactory.configureAudioSession()
         LocalMediaProxyServer.shared.start()
         PerformanceMonitor.shared.start()
