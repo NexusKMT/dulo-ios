@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: build-sticky-runtime
+    name: build-ipa
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -62,14 +62,19 @@ jobs:
         id: package
         run: |
           BUILD=$(awk '/CURRENT_PROJECT_VERSION/ {gsub(/[^0-9]/, "", $2); print $2; exit}' project.yml)
+          MARKETING=$(awk '/MARKETING_VERSION/ {gsub(/[^0-9.]/, "", $2); print $2; exit}' project.yml)
           mkdir -p Payload
           cp -R "build/Dulo-sticky.xcarchive/Products/Applications/Dulo.app" Payload/
-          zip -r -X "Dulo-0.2.1-${BUILD}-sticky.ipa" Payload
+          zip -r -X "Dulo-${MARKETING}-${BUILD}.ipa" Payload
+          cp "Dulo-${MARKETING}-${BUILD}.ipa" "Dulo.ipa"
           echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+          echo "version=${MARKETING}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: Dulo-0.2.1-${{ steps.package.outputs.build }}-sticky
-          path: Dulo-0.2.1-${{ steps.package.outputs.build }}-sticky.ipa
+          name: Dulo
+          path: |
+            Dulo-*.ipa
+            Dulo.ipa
           if-no-files-found: error
           retention-days: 14

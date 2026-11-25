@@ -1,27 +1,25 @@
 import Foundation
 
-/// Build 35 ships one IPA with two runtime arms. Each cold launch increments
-/// `dulo.launchSeq`; odd launches use sticky prewarm and even launches use the
-/// build-32 control behaviour. The build number is still the primary version
-/// discriminator, while every telemetry event carries the exact runtime arm.
+/// Production runtime policy. Sticky prewarm is graduated as the standard
+/// architecture for all launches, eliminating micro-drag direction churn
+/// and preserving prewarmed player layers across gesture deceleration.
 public enum ExperimentVariant: String, CaseIterable {
     case control
     case sticky
 
-    public static let experimentID = "jank-sticky-2026-11-24"
+    public static let experimentID = "production-sticky"
     private static let launchSeqKey = "dulo.launchSeq"
 
     /// Set before `LocalMediaProxyServer.shared.start()`, because that is the
     /// first access to `MediaCacheStorage.shared`.
-    public private(set) static var current: ExperimentVariant = .control
+    public private(set) static var current: ExperimentVariant = .sticky
     public private(set) static var launchSeq: Int = 0
 
     private static var didBootstrap = false
 
     public static func variant(forLaunchSeq seq: Int) -> ExperimentVariant {
-        // First launch is sticky so a fresh install immediately exercises the
-        // candidate; the second cold launch is the same-build control.
-        seq % 2 == 1 ? .sticky : .control
+        // Sticky prewarm is graduated as the standard production arm for all launches.
+        .sticky
     }
 
     public static func bootstrap(defaults: UserDefaults = .standard) {
@@ -30,7 +28,7 @@ public enum ExperimentVariant: String, CaseIterable {
         let seq = defaults.integer(forKey: launchSeqKey) + 1
         defaults.set(seq, forKey: launchSeqKey)
         launchSeq = seq
-        current = variant(forLaunchSeq: seq)
+        current = .sticky
         PrewarmPolicy.mode = .hysteresis
     }
 
@@ -45,14 +43,12 @@ public enum ExperimentVariant: String, CaseIterable {
         PrewarmPolicy.mode = .hysteresis
     }
 
-    /// The only experimental behaviour in this build. Control keeps the
-    /// visible-set prewarm selection from build 32.
+    /// Graduated as standard production behaviour.
     public static var stickyPrewarmEnabled: Bool {
         current == .sticky
     }
 
-    /// Kept so the build-34 audio experiment can never be enabled accidentally
-    /// by a stale compilation condition. Both build-35 arms use control audio.
+    /// Kept so audio routing is clean.
     public static var audioFixEnabled: Bool { false }
 
     public static var telemetryFields: [String: Any] {
