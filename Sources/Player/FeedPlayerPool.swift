@@ -541,23 +541,6 @@ public final class FeedPlayerPool {
                     autoplay: autoplay
                 )
             }
-        } else if autoplay && slot.player.timeControlStatus != .playing {
-            let currentTime = slot.player.currentTime()
-            // Force a fresh Range request if the proxy socket was severed
-            // while the app was locked.
-            slot.player.seek(
-                to: currentTime,
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
-            ) { [weak self, weak slot] _ in
-                Task { @MainActor [weak self, weak slot] in
-                    guard let self,
-                          let slot,
-                          self.audioFocus.shouldPlay,
-                          self.audioFocus.owner == .video(streamId: streamId) else { return }
-                    slot.play()
-                }
-            }
         } else if autoplay {
             slot.play()
         }

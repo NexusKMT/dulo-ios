@@ -393,6 +393,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             singlePlayerView.playerLayer.player = nil
             singlePlayerView.alpha = 0.0
             singlePlayerView.onReadyForDisplay = nil
+            singleCoverImageView.isHidden = false
         }
 
         func attach(slot: FeedPlayerPool.PlayerSlot) {
@@ -403,6 +404,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             if alreadyAttached, ExperimentVariant.stickyPrewarmEnabled {
                 if singlePlayerView.playerLayer.isReadyForDisplay {
                     singlePlayerView.alpha = 1.0
+                    singleCoverImageView.isHidden = true
                 }
                 return
             }
@@ -414,8 +416,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             }
             if singlePlayerView.playerLayer.isReadyForDisplay {
                 singlePlayerView.alpha = 1.0
+                singleCoverImageView.isHidden = true
             } else {
                 singlePlayerView.alpha = 0.0
+                singleCoverImageView.isHidden = false
                 singlePlayerView.onReadyForDisplay = { [weak self] in
                     guard let self else { return }
                     if let vid = self.currentItem?.video.id {
@@ -423,6 +427,8 @@ struct VerticalPager: UIViewControllerRepresentable {
                     }
                     UIView.animate(withDuration: 0.12, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
                         self.singlePlayerView.alpha = 1.0
+                    } completion: { _ in
+                        self.singleCoverImageView.isHidden = true
                     }
                 }
             }
