@@ -1027,7 +1027,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 guard index >= 0, index < store.items.count else { continue }
                 let videoId = store.items[index].video.id
                 Task { [weak viewModel] in
-                    let result = await viewModel?.resolveMedia(id: videoId, force: false, isPreload: true)
+                    let result = await viewModel?.resolveMedia(id: videoId, force: false)
                     guard case .ready(let lease) = result else { return }
                     if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
                         ImagePipeline.shared.prefetch(urls: [url])
@@ -1478,7 +1478,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let targetSize: Int64 = (offset == 1) ? MediaPreloadManager.videoPreloadSize : (300 * 1024)
 
                 Task { [weak viewModel] in
-                    let result = await viewModel?.resolveMedia(id: videoId, force: false, isPreload: true)
+                    let result = await viewModel?.resolveMedia(id: videoId, force: false)
                     guard case .ready(let lease) = result else { return }
 
                     // 1. Prefetch cover image

@@ -60,10 +60,9 @@ final class FeedViewModel: ObservableObject {
 
     /// Returns a fresh lease for `id`, resolving or renewing it on demand.
     /// Concurrent callers share one request; `force` bypasses both the client
-    /// lease and the server cache (used after a CDN 403). `isPreload` flags
-    /// opportunistic background prewarming so server preserves VIP tab for active playback.
+    /// lease and the server cache (used after a CDN 403).
     @discardableResult
-    func resolveMedia(id: String, force: Bool = false, isPreload: Bool = false) async -> MediaResolution {
+    func resolveMedia(id: String, force: Bool = false) async -> MediaResolution {
         if !force, let cached = cachedLease(for: id) {
             return .ready(cached)
         }
@@ -73,7 +72,7 @@ final class FeedViewModel: ObservableObject {
         let requestId = nextRequestId
         nextRequestId += 1
         let task = Task<MediaResolution, Never> { [client] in
-            await client.resolveMedia(baseUrl: AppSettings.serverBaseUrl, id: id, force: force, isPreload: isPreload)
+            await client.resolveMedia(baseUrl: AppSettings.serverBaseUrl, id: id, force: force)
         }
         inFlight[id] = InFlight(requestId: requestId, task: task)
         let result = await task.value
