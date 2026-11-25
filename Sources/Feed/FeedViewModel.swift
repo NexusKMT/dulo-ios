@@ -20,6 +20,7 @@ final class FeedViewModel: ObservableObject {
     /// value type with no equality.
     private struct InFlight {
         let requestId: Int
+        let priority: Int
         let task: Task<MediaResolution, Never>
     }
 
@@ -61,20 +62,24 @@ final class FeedViewModel: ObservableObject {
     /// Returns a fresh lease for `id`, resolving or renewing it on demand.
     /// Concurrent callers share one request; `force` bypasses both the client
     /// lease and the server cache (used after a CDN 403).
+    /// `priority`: 0 for VIP active playback, 1 for speculative background prewarm.
     @discardableResult
-    func resolveMedia(id: String, force: Bool = false) async -> MediaResolution {
+    func resolveMedia(id: String, force: Bool = false, priority: Int = 0) async -> MediaResolution {
         if !force, let cached = cachedLease(for: id) {
             return .ready(cached)
         }
         if let pending = inFlight[id], !force {
-            return await pending.task.value
+            if priority >= pending.priority {
+                return await pending.task.value
+            }
+            // VIP Promotion: promote pending preload task by issuing a priority 0 request
         }
         let requestId = nextRequestId
         nextRequestId += 1
         let task = Task<MediaResolution, Never> { [client] in
-            await client.resolveMedia(baseUrl: AppSettings.serverBaseUrl, id: id, force: force)
+            await client.resolveMedia(baseUrl: AppSettings.serverBaseUrl, id: id, force: force, priority: priority)
         }
-        inFlight[id] = InFlight(requestId: requestId, task: task)
+        inFlight[id] = InFlight(requestId: requestId, priority: priority, task: task)
         let result = await task.value
         if inFlight[id]?.requestId == requestId {
             inFlight.removeValue(forKey: id)
