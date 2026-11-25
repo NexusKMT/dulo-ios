@@ -62,7 +62,8 @@ struct MediaClient {
 
     /// Asks the server for `id`'s media lease: a play URL for videos, an image
     /// list for posts. `force` bypasses the server cache after a CDN 403.
-    func resolveMedia(baseUrl: String, id: String, force: Bool = false) async -> MediaResolution {
+    /// `priority` = 0 for VIP active playback, 1 for speculative N+1 prewarm.
+    func resolveMedia(baseUrl: String, id: String, force: Bool = false, priority: Int = 0) async -> MediaResolution {
         let base: URL
         do {
             base = try Self.serverBase(baseUrl)
@@ -70,8 +71,15 @@ struct MediaClient {
             return .internalFailure
         }
         var url = base.appendingPathComponent("resolve").appendingPathComponent(id)
+        var queryItems: [URLQueryItem] = []
         if force {
-            url = url.appendingQueryItems([URLQueryItem(name: "force", value: "1")])
+            queryItems.append(URLQueryItem(name: "force", value: "1"))
+        }
+        if priority > 0 {
+            queryItems.append(URLQueryItem(name: "priority", value: "\(priority)"))
+        }
+        if !queryItems.isEmpty {
+            url = url.appendingQueryItems(queryItems)
         }
         let data: Data
         let response: URLResponse

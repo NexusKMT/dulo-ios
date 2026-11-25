@@ -1026,28 +1026,11 @@ struct VerticalPager: UIViewControllerRepresentable {
                 let index = indexPath.item
                 guard index >= 0, index < store.items.count else { continue }
                 let videoId = store.items[index].video.id
-                Task { [weak viewModel] in
-                    let result = await viewModel?.resolveMedia(id: videoId, force: false)
-                    guard case .ready(let lease) = result else { return }
+                // Cache hit only: prefetch cover image if already resolved.
+                // Do NOT fire uncached /resolve requests to protect the server's Dual-Tab priority queue.
+                if let lease = viewModel.cachedLease(for: videoId) {
                     if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
                         ImagePipeline.shared.prefetch(urls: [url])
-                    }
-                    switch lease.value {
-                    case .video(let playUrl, _, _, _):
-                        if let url = URL(string: playUrl) {
-                            MediaPreloadManager.shared.preload(url: url, key: videoId)
-                        }
-                    case .images(_, _, let slides):
-                        if let firstSlide = slides.first,
-                           let motionUrlStr = firstSlide.motionVideoUrl,
-                           let url = URL(string: motionUrlStr) {
-                            let motionKey = "\(videoId)_\(firstSlide.id)"
-                            MediaPreloadManager.shared.preload(
-                                url: url,
-                                key: motionKey,
-                                targetSize: MediaPreloadManager.livePhotoPreloadSize
-                            )
-                        }
                     }
                 }
             }
@@ -1471,39 +1454,38 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         func preloadAhead(from index: Int) {
-            for offset in 1...2 {
-                let target = index + offset
-                guard target >= 0 && target < store.items.count else { continue }
-                let videoId = store.items[target].video.id
-                let targetSize: Int64 = (offset == 1) ? MediaPreloadManager.videoPreloadSize : (300 * 1024)
+            // Strict N+1 Prewarm: only prewarm the immediate next item (target = index + 1)
+            let target = index + 1
+            guard target >= 0 && target < store.items.count else { return }
+            let videoId = store.items[target].video.id
 
-                Task { [weak viewModel] in
-                    let result = await viewModel?.resolveMedia(id: videoId, force: false)
-                    guard case .ready(let lease) = result else { return }
+            Task { [weak viewModel] in
+                // Priority 1 for speculative background prewarming
+                let result = await viewModel?.resolveMedia(id: videoId, force: false, priority: 1)
+                guard case .ready(let lease) = result else { return }
 
-                    // 1. Prefetch cover image
-                    if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
-                        ImagePipeline.shared.prefetch(urls: [url])
+                // 1. Prefetch cover image
+                if let coverStr = lease.value.coverImageUrl, let url = URL(string: coverStr) {
+                    ImagePipeline.shared.prefetch(urls: [url])
+                }
+
+                // 2. Preload media based on post mode
+                switch lease.value {
+                case .video(let playUrl, _, _, _):
+                    if let url = URL(string: playUrl) {
+                        MediaPreloadManager.shared.preload(url: url, key: videoId, targetSize: MediaPreloadManager.videoPreloadSize)
                     }
-
-                    // 2. Preload media based on post mode
-                    switch lease.value {
-                    case .video(let playUrl, _, _, _):
-                        if let url = URL(string: playUrl) {
-                            MediaPreloadManager.shared.preload(url: url, key: videoId, targetSize: targetSize)
-                        }
-                    case .images(_, _, let slides):
-                        // Multi-modal Live Photo preloading: preload the first slide's motion video loop!
-                        if let firstSlide = slides.first,
-                           let motionUrlStr = firstSlide.motionVideoUrl,
-                           let url = URL(string: motionUrlStr) {
-                            let motionKey = "\(videoId)_\(firstSlide.id)"
-                            MediaPreloadManager.shared.preload(
-                                url: url,
-                                key: motionKey,
-                                targetSize: MediaPreloadManager.livePhotoPreloadSize
-                            )
-                        }
+                case .images(_, _, let slides):
+                    // Multi-modal Live Photo preloading: strictly preload ONLY the first slide's motion video loop!
+                    if let firstSlide = slides.first,
+                       let motionUrlStr = firstSlide.motionVideoUrl,
+                       let url = URL(string: motionUrlStr) {
+                        let motionKey = "\(videoId)_\(firstSlide.id)"
+                        MediaPreloadManager.shared.preload(
+                            url: url,
+                            key: motionKey,
+                            targetSize: MediaPreloadManager.livePhotoPreloadSize
+                        )
                     }
                 }
             }
