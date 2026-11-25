@@ -8,7 +8,7 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     MARKETING_VERSION: "0.2.2"
-    CURRENT_PROJECT_VERSION: "37"
+    CURRENT_PROJECT_VERSION: "38"
 targets:
   Dulo:
     type: application
