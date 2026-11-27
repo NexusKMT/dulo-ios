@@ -35,11 +35,26 @@ struct SlideResponse: Decodable {
     let id: String
     let imageUrl: String?
     let videoUrl: String?
+    let width: Int?
+    let height: Int?
+    let ar: Double?
+
+    /// A slide's own geometry: one image post mixes orientations, so the post's
+    /// mode cannot describe it. `nil` when the server has no real dimensions,
+    /// in which case the slide falls back to the post's mode.
+    var aspectRatio: Double? {
+        if let ar, ar > 0, ar.isFinite { return ar }
+        guard let width, let height, width > 0, height > 0 else { return nil }
+        return Double(width) / Double(height)
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
         case imageUrl = "image_url"
         case videoUrl = "video_url"
+        case width
+        case height
+        case ar
     }
 
     init(from decoder: Decoder) throws {
@@ -47,6 +62,9 @@ struct SlideResponse: Decodable {
         id = (try? c.decode(String.self, forKey: .id)) ?? ""
         imageUrl = try? c.decodeIfPresent(String.self, forKey: .imageUrl)
         videoUrl = try? c.decodeIfPresent(String.self, forKey: .videoUrl)
+        width = try? c.decodeIfPresent(Int.self, forKey: .width)
+        height = try? c.decodeIfPresent(Int.self, forKey: .height)
+        ar = try? c.decodeIfPresent(Double.self, forKey: .ar)
     }
 }
 
