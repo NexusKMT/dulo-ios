@@ -236,7 +236,7 @@ private struct FeedDebugHUD: View {
         withAnimation(.easeInOut(duration: 0.15)) {
             dislikedIds.insert(id)
         }
-        guard let url = URL(string: "\(AppSettings.serverBaseUrl)/dislike/\(id)") else { return }
+        guard let url = URL(string: "\(AppSettings.assetsBaseUrl)/dislike/\(id)") else { return }
         var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 10)
         request.httpMethod = "POST"
         Task.detached {

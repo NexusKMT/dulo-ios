@@ -46,10 +46,19 @@ struct MediaClient {
     }
 
     /// Loads the identity list from `{base}/manifest.json`.
+    ///
+    /// The manifest is a static file with an ETag, so the request revalidates
+    /// instead of re-downloading 6.8 MB: a 304 replays the cached body.
     func listVideos(baseUrl: String) async throws -> [VideoItem] {
         let base = try Self.serverBase(baseUrl)
         let manifestUrl = base.appendingPathComponent("manifest.json")
-        let (data, response) = try await session.data(from: manifestUrl)
+        var request = URLRequest(
+            url: manifestUrl,
+            cachePolicy: .reloadRevalidatingCacheData,
+            timeoutInterval: 20
+        )
+        request.httpMethod = "GET"
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
             throw MediaException("获取媒体清单异常: HTTP \(http.statusCode)")
         }
@@ -60,84 +69,6 @@ struct MediaClient {
         return manifest.items.map { VideoItem(id: $0.id, title: $0.title, aspectRatio: $0.ar) }
     }
 
-    /// Asks the server for `id`'s media lease: a play URL for videos, an image
-    /// list for posts. `force` bypasses the server cache after a CDN 403.
-    /// `priority` = 0 for VIP active playback, 1 for speculative N+1 prewarm.
-    func resolveMedia(baseUrl: String, id: String, force: Bool = false, priority: Int = 0) async -> MediaResolution {
-        let base: URL
-        do {
-            base = try Self.serverBase(baseUrl)
-        } catch {
-            return .internalFailure
-        }
-        var url = base.appendingPathComponent("resolve").appendingPathComponent(id)
-        var queryItems: [URLQueryItem] = []
-        if force {
-            queryItems.append(URLQueryItem(name: "force", value: "1"))
-        }
-        if priority > 0 {
-            queryItems.append(URLQueryItem(name: "priority", value: "\(priority)"))
-        }
-        if !queryItems.isEmpty {
-            url = url.appendingQueryItems(queryItems)
-        }
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await session.data(from: url)
-        } catch let urlErr as URLError where urlErr.code == .cancelled {
-            return .cancelled
-        } catch is CancellationError {
-            return .cancelled
-        } catch {
-            return .networkFailure
-        }
-        guard let http = response as? HTTPURLResponse else {
-            return .networkFailure
-        }
-        if http.statusCode == 404 { return .notFound }
-        if !(200...299).contains(http.statusCode) { return .httpFailure(statusCode: http.statusCode) }
-        let body: ResolveResponse
-        do {
-            body = try JSONDecoder().decode(ResolveResponse.self, from: data)
-        } catch {
-            return .invalidResponse
-        }
-        let media: ResolvedMedia
-        if !body.images.isEmpty {
-            let slides: [GallerySlide]
-            if let serverSlides = body.slides, !serverSlides.isEmpty {
-                slides = serverSlides.compactMap { s in
-                    guard let img = s.imageUrl, !img.isEmpty else { return nil }
-                    let scopedId = "\(id)_\(s.id)"
-                    return GallerySlide(
-                        id: scopedId,
-                        imageUrl: img,
-                        motionVideoUrl: s.videoUrl,
-                        aspectRatio: s.aspectRatio
-                    )
-                }
-            } else {
-                slides = body.images.enumerated().map { (idx, url) in
-                    let scopedId = "\(id)_\(idx)"
-                    return GallerySlide(id: scopedId, imageUrl: url, motionVideoUrl: nil)
-                }
-            }
-            media = .images(urls: body.images, music: body.music, slides: slides)
-        } else if let playUrl = body.url, !playUrl.isEmpty {
-            media = .video(url: playUrl, cover: body.cover, width: body.width ?? 0, height: body.height ?? 0)
-        } else {
-            return .notFound
-        }
-        let ttlSeconds = max(TimeInterval(body.ttlSeconds ?? Self.defaultTtlSeconds), 1.0)
-        let expiresAt: Date
-        if let serverEpoch = body.expiresAt, serverEpoch > 0 {
-            expiresAt = Date(timeIntervalSince1970: serverEpoch)
-        } else {
-            expiresAt = Date().addingTimeInterval(ttlSeconds)
-        }
-        return .ready(Lease(media, expiresAt: expiresAt))
-    }
 }
 
 private extension URL {

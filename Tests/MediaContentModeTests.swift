@@ -279,28 +279,30 @@ final class MediaContentModeTests: XCTestCase {
     }
 
     #if canImport(UIKit)
-    /// One image post mixes orientations, so each slide has to be decided on its
-    /// own geometry: the post-level `ar` is absent for 图文 by design.
+    /// One image post mixes orientations, so each slide is decided on its own
+    /// geometry: the post-level `ar` is absent for 图文 by design.
     func testSlideAspectRatioDrivesItsOwnMode() throws {
-        let portrait = #"{"id":"0","image_url":"a","width":1279,"height":1706,"ar":0.75}"#
-            .data(using: .utf8)!
-        let portraitSlide = try JSONDecoder().decode(SlideResponse.self, from: portrait)
-        XCTAssertEqual(portraitSlide.aspectRatio, 0.75)
-        XCTAssertEqual(MediaContentMode.resolve(aspectRatio: portraitSlide.aspectRatio), .fill)
+        let portrait = ImageSlide(
+            imageUrl: try XCTUnwrap(URL(string: "https://example.com/a.webp")),
+            motionUrl: nil,
+            aspectRatio: 1279.0 / 1706.0
+        )
+        XCTAssertEqual(MediaContentMode.resolve(aspectRatio: portrait.aspectRatio), .fill)
 
-        // Dimensions without a server-computed `ar` still resolve client-side.
-        let landscape = #"{"id":"1","image_url":"b","width":1356,"height":882}"#
-            .data(using: .utf8)!
-        let landscapeSlide = try JSONDecoder().decode(SlideResponse.self, from: landscape)
-        XCTAssertEqual(try XCTUnwrap(landscapeSlide.aspectRatio), 1356.0 / 882.0, accuracy: 0.0001)
-        XCTAssertEqual(MediaContentMode.resolve(aspectRatio: landscapeSlide.aspectRatio), .fit)
+        let landscape = ImageSlide(
+            imageUrl: try XCTUnwrap(URL(string: "https://example.com/b.webp")),
+            motionUrl: nil,
+            aspectRatio: 1356.0 / 882.0
+        )
+        XCTAssertEqual(MediaContentMode.resolve(aspectRatio: landscape.aspectRatio), .fit)
 
-        // Unknown geometry must stay unknown: the caller then inherits the post.
-        let bare = #"{"id":"2","image_url":"c"}"#.data(using: .utf8)!
-        XCTAssertNil(try JSONDecoder().decode(SlideResponse.self, from: bare).aspectRatio)
-
-        let zero = #"{"id":"3","image_url":"d","width":0,"height":0}"#.data(using: .utf8)!
-        XCTAssertNil(try JSONDecoder().decode(SlideResponse.self, from: zero).aspectRatio)
+        // Unknown geometry stays unknown: the caller then inherits the post's mode.
+        let bare = ImageSlide(
+            imageUrl: try XCTUnwrap(URL(string: "https://example.com/c.webp")),
+            motionUrl: nil,
+            aspectRatio: nil
+        )
+        XCTAssertNil(bare.aspectRatio)
     }
     #endif
 }
