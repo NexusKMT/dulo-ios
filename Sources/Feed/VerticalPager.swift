@@ -190,8 +190,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         }
 
         /// One mode for both surfaces of this slide: the still cover and the Live
-        /// Photo motion layer. `GallerySlide` carries no `ar` of its own, so the
-        /// owner passes the already resolved item mode (`.fit` when unusable).
+        /// Photo motion layer. The owner passes the mode resolved from the slide's
+        /// own `ar` (`VerticalPager.contentMode(for:)`), falling back to the post's
+        /// mode only when the slide has no geometry.
         /// Must run before the cover image is assigned: the image then appears
         /// already fill/fit instead of re-laying out under the motion layer.
         func applyContentMode(_ mode: MediaContentMode) {
@@ -339,6 +340,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         private var currentSlideIndex: Int = 0
         private var isReconfiguring = false
         private var currentBgmUrl: String?
+        /// Poster mode for the current item when it differs from the item's own
+        /// mode, i.e. an image post whose first slide has its own `ar`.
+        private var coverContentMode: MediaContentMode?
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -452,6 +456,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentItem = nil
             resolvedPlayUrl = nil
             currentBgmUrl = nil
+            coverContentMode = nil
             cellMode = .unconfigured
 
             // CRITICAL: DO NOT call currentSlides.removeAll() or horizontalCollectionView.reloadData() here!
@@ -610,7 +615,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         /// so the post-level mode cannot describe it. A slide without `ar` (the
         /// server had no real dimensions) inherits the post's mode.
         private func contentMode(for slide: GallerySlide) -> MediaContentMode {
-            guard let aspectRatio = slide.aspectRatio else { return currentContentMode }
+            guard let aspectRatio = slide.aspectRatio, aspectRatio.isFinite, aspectRatio > 0 else {
+                return currentContentMode
+            }
             return MediaContentMode.resolve(aspectRatio: aspectRatio)
         }
 
@@ -622,11 +629,15 @@ struct VerticalPager: UIViewControllerRepresentable {
         private func applyVideoGravityForCurrentItem() {
             let mode = currentContentMode
             let gravity = mode.videoGravity
+            // An image post's poster *is* its first slide, so it belongs in that
+            // slide's box; otherwise the cover letterboxes and snaps to the
+            // gallery's crop on take-over.
+            let coverMode = coverContentMode ?? mode
 
             // Cover first: it must already occupy its final fill/fit box before
             // the layer fades in over it.
-            singleCoverImageView.contentMode = mode.imageContentMode
-            singleCoverImageView.clipsToBounds = mode.clipsContent
+            singleCoverImageView.contentMode = coverMode.imageContentMode
+            singleCoverImageView.clipsToBounds = coverMode.clipsContent
 
             // `resizeAspectFill` draws past the layer bounds: clip exactly when
             // the mode is fill, stay unclipped for fit.
@@ -713,6 +724,16 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentItem = item
             currentViewModel = viewModel
             currentStore = store
+            let cachedLease = viewModel.cachedLease(for: item.video.id)
+            // A cached image post already knows its slides: the poster takes
+            // slide 0's mode instead of the post's (which is `.fit` for 图文).
+            // A video post keeps `nil`, i.e. the item's own mode.
+            coverContentMode = nil
+            if let cachedLease,
+               case .images(_, _, let cachedSlides) = cachedLease.value,
+               let firstSlide = cachedSlides.first {
+                coverContentMode = contentMode(for: firstSlide)
+            }
             // Item switch: resolve geometry synchronously, before the cover probe
             // below assigns an image. Deliberately only the single-video surfaces:
             // the gallery collection view may still hold the *previous* item's
@@ -733,7 +754,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             let video = item.video
 
             // Fast synchronous RAM probe for cover
-            if let lease = viewModel.cachedLease(for: video.id),
+            if let lease = cachedLease,
                let coverStr = lease.value.coverImageUrl,
                let coverUrl = URL(string: coverStr),
                let cached = ImagePipeline.shared.cachedImage(for: coverUrl) {
@@ -743,7 +764,7 @@ struct VerticalPager: UIViewControllerRepresentable {
             currentTask?.cancel()
             currentTask = Task { @MainActor [weak self] in
                 guard let self else { return }
-                var lease = viewModel.cachedLease(for: video.id)
+                var lease = cachedLease
                 if lease == nil || !lease!.isFresh() {
                     let result = await viewModel.resolveMedia(id: video.id, force: false)
                     if case .ready(let fresh) = result {
@@ -755,6 +776,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 switch lease.value {
                 case .video(let playUrl, let coverStr, _, _):
                     self.cellMode = .video(playUrl: playUrl)
+                    self.coverContentMode = nil
                     self.currentSlides = []
                     self.currentSlideUrls = []
                     self.resolvedPlayUrl = playUrl
@@ -788,6 +810,7 @@ struct VerticalPager: UIViewControllerRepresentable {
                 case .images(let urls, let music, let slides):
                     let effectiveSlides = slides.isEmpty ? urls.enumerated().map { GallerySlide(id: "\(video.id)_\($0)", imageUrl: $1) } : slides
                     self.cellMode = .gallery(slides: effectiveSlides, bgmUrl: music)
+                    self.coverContentMode = effectiveSlides.first.map { self.contentMode(for: $0) }
                     self.currentSlides = effectiveSlides
                     self.currentSlideUrls = effectiveSlides.compactMap { URL(string: $0.imageUrl) }
                     self.resolvedPlayUrl = nil
