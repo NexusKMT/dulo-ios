@@ -28,6 +28,7 @@ struct PlayerLayerView: UIViewRepresentable {
         CATransaction.setDisableActions(true)
         view.playerLayer.player = player
         view.playerLayer.videoGravity = videoGravity
+        view.updateClipping(for: videoGravity)
         // NEVER set view.isHidden = true! isHidden suspends CoreAnimation decoding.
         // Use alpha for smooth micro-fade so hardware decoder pushes frame 0 immediately.
         view.alpha = isHidden ? 0.0 : 1.0
@@ -61,6 +62,7 @@ struct PlayerLayerView: UIViewRepresentable {
                 }
             }
         }
+        view.updateClipping(for: videoGravity)
         if view.playerLayer.videoGravity != videoGravity {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
@@ -110,6 +112,18 @@ public final class PlayerLayerContainer: UIView {
     required public init?(coder: NSCoder) {
         super.init(coder: coder)
         setupLayer()
+    }
+
+    /// `resizeAspectFill` draws past its own bounds, so the layer clips itself
+    /// exactly when the fill policy applies. Every other mode stays unclipped to
+    /// keep the current transition behaviour.
+    public func updateClipping(for gravity: AVLayerVideoGravity) {
+        let shouldClip = gravity == .resizeAspectFill
+        guard layer.masksToBounds != shouldClip else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.masksToBounds = shouldClip
+        CATransaction.commit()
     }
 
     /// No-op for caller compatibility: player layer remains attached throughout

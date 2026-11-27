@@ -3,9 +3,12 @@
 struct VideoItem: Identifiable, Hashable {
     var id: String
     var title: String
+    /// `width / height` from the manifest; nil when the server did not report it.
+    var aspectRatio: Double?
 
-    init(id: String = "", title: String) {
+    init(id: String = "", title: String, aspectRatio: Double? = nil) {
         self.id = id
         self.title = title
+        self.aspectRatio = aspectRatio
     }
 }

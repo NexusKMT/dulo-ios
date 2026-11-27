@@ -57,7 +57,7 @@ struct MediaClient {
         if manifest.schemaVersion != 1 {
             throw MediaException("媒体清单版本不支持: \(manifest.schemaVersion)")
         }
-        return manifest.items.map { VideoItem(id: $0.id, title: $0.title) }
+        return manifest.items.map { VideoItem(id: $0.id, title: $0.title, aspectRatio: $0.ar) }
     }
 
     /// Asks the server for `id`'s media lease: a play URL for videos, an image

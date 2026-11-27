@@ -17,14 +17,17 @@ struct ManifestResponse: Decodable {
 struct ManifestItem: Decodable {
     let title: String
     let id: String
+    /// width / height, written by the server; nil for older catalogs.
+    let ar: Double?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         title = (try? c.decode(String.self, forKey: .title)) ?? ""
         id = (try? c.decode(String.self, forKey: .id)) ?? ""
+        ar = try? c.decodeIfPresent(Double.self, forKey: .ar)
     }
 
-    private enum CodingKeys: String, CodingKey { case title, id }
+    private enum CodingKeys: String, CodingKey { case title, id, ar }
 }
 
 /// Slide response for multi-image / Live Photo posts.
