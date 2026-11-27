@@ -6,6 +6,10 @@ import XCTest
 @testable import DuloCore
 #endif
 
+/// Legacy façade coverage. `VideoGravityPolicy` now delegates to
+/// `MediaContentMode.resolve(aspectRatio:)`, so these assertions still exercise
+/// the shared decision; the per-mode mapping and the video/image consistency
+/// regression live in `MediaContentModeTests`.
 final class VideoGravityPolicyTests: XCTestCase {
     func testPortraitContentFills() {
         // 9:16 phone video, the dominant portrait case.
