@@ -196,7 +196,9 @@ final class DouyinClientTests: XCTestCase {
 
         XCTAssertEqual(url.scheme, "https")
         XCTAssertEqual(url.host, "www.douyin.com")
-        XCTAssertEqual(url.path, "/aweme/v1/web/aweme/detail/")
+        // `URL.path` drops the trailing slash; the request itself keeps it.
+        XCTAssertEqual(url.path, "/aweme/v1/web/aweme/detail")
+        XCTAssertTrue(url.absoluteString.contains("/aweme/v1/web/aweme/detail/?"))
 
         let query = try XCTUnwrap(
             URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
@@ -232,7 +234,8 @@ final class DouyinClientTests: XCTestCase {
             let url = try XCTUnwrap(request.url)
 
             XCTAssertEqual(url.host, host)
-            XCTAssertEqual(url.path, "/aweme/v1/feed/")
+            XCTAssertEqual(url.path, "/aweme/v1/feed")
+            XCTAssertTrue(url.absoluteString.contains("/aweme/v1/feed/?"))
 
             let query = try XCTUnwrap(
                 URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
