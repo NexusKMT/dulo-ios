@@ -110,7 +110,12 @@ struct MediaClient {
                 slides = serverSlides.compactMap { s in
                     guard let img = s.imageUrl, !img.isEmpty else { return nil }
                     let scopedId = "\(id)_\(s.id)"
-                    return GallerySlide(id: scopedId, imageUrl: img, motionVideoUrl: s.videoUrl)
+                    return GallerySlide(
+                        id: scopedId,
+                        imageUrl: img,
+                        motionVideoUrl: s.videoUrl,
+                        aspectRatio: s.aspectRatio
+                    )
                 }
             } else {
                 slides = body.images.enumerated().map { (idx, url) in

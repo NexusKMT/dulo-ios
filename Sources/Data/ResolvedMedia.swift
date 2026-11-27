@@ -4,11 +4,20 @@ public struct GallerySlide: Identifiable, Hashable, Equatable {
     public let id: String
     public let imageUrl: String
     public let motionVideoUrl: String?
+    /// The slide's own `width / height`. `nil` means "unknown upstream" and the
+    /// slide inherits the post's mode instead of guessing.
+    public let aspectRatio: Double?
 
-    public init(id: String, imageUrl: String, motionVideoUrl: String? = nil) {
+    public init(
+        id: String,
+        imageUrl: String,
+        motionVideoUrl: String? = nil,
+        aspectRatio: Double? = nil
+    ) {
         self.id = id
         self.imageUrl = imageUrl
         self.motionVideoUrl = motionVideoUrl
+        self.aspectRatio = aspectRatio
     }
 
     public var isLivePhoto: Bool { motionVideoUrl != nil }
