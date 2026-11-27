@@ -6,7 +6,7 @@ import UIKit
 
 /// How one piece of media should occupy the feed canvas.
 ///
-/// Contract: `Dulo-server/docs/video-layout.md`. Portrait items fill (edges are
+/// Contract: `dulo-ios/docs/video-layout.md`. Portrait items fill (edges are
 /// cropped, accepted); landscape and square items keep their full frame and
 /// letterbox. Every surface that draws media — video layer, cover image, gallery
 /// image, live-photo layer — must resolve to the *same* mode for the same item,

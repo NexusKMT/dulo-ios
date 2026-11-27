@@ -44,7 +44,7 @@ final class FeedViewModel: ObservableObject {
         Task {
             defer { isLoading = false }
             do {
-                let loaded = try await client.listVideos(baseUrl: AppSettings.serverBaseUrl)
+                let loaded = try await client.listVideos(baseUrl: AppSettings.assetsBaseUrl)
                 videos = loaded
                 if videos.isEmpty {
                     self.error = "服务器目录中无可用视频"
@@ -76,8 +76,23 @@ final class FeedViewModel: ObservableObject {
         }
         let requestId = nextRequestId
         nextRequestId += 1
-        let task = Task<MediaResolution, Never> { [client] in
-            await client.resolveMedia(baseUrl: AppSettings.serverBaseUrl, id: id, force: force, priority: priority)
+        let task = Task<MediaResolution, Never> {
+            // The app mints its own URLs now; there is no server to ask.
+            do {
+                let content = try await DouyinClient.shared.content(for: id)
+                return .ready(Lease(Self.media(from: content, id: id), expiresAt: Self.expiry(of: content)))
+            } catch let failure as DouyinClient.Failure {
+                switch failure {
+                case .notFound: return .notFound
+                case .network: return .networkFailure
+                case .http(let statusCode): return .httpFailure(statusCode: statusCode)
+                case .malformed: return .invalidResponse
+                }
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return .internalFailure
+            }
         }
         inFlight[id] = InFlight(requestId: requestId, priority: priority, task: task)
         let result = await task.value
@@ -88,6 +103,38 @@ final class FeedViewModel: ObservableObject {
             }
         }
         return result
+    }
+
+    /// Bridges the client-native content into the shape the pager renders.
+    private static func media(from content: MediaContent, id: String) -> ResolvedMedia {
+        switch content {
+        case .video(let url, let cover, let width, let height):
+            return .video(
+                url: url.absoluteString,
+                cover: cover?.absoluteString,
+                width: width,
+                height: height
+            )
+        case .images(let slides, let music):
+            return .images(
+                urls: slides.map { $0.imageUrl.absoluteString },
+                music: music?.absoluteString,
+                slides: slides.enumerated().map { index, slide in
+                    GallerySlide(
+                        id: "\(id)_\(index)",
+                        imageUrl: slide.imageUrl.absoluteString,
+                        motionVideoUrl: slide.motionUrl?.absoluteString,
+                        aspectRatio: slide.aspectRatio
+                    )
+                }
+            )
+        }
+    }
+
+    /// A signed URL lives as long as its `x-expires`; without one, assume the
+    /// old server default so a long session still refreshes.
+    private static func expiry(of content: MediaContent) -> Date {
+        content.expiresAt ?? Date().addingTimeInterval(TimeInterval(MediaClient.defaultTtlSeconds))
     }
 
     /// Cancels any in-flight resolution for `id` when the page is scrolled away.

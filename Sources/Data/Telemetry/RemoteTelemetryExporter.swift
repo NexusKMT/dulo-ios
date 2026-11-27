@@ -70,7 +70,7 @@ public final class RemoteTelemetryExporter {
         let batch = buffer
         buffer.removeAll(keepingCapacity: true)
 
-        guard let endpoint = URL(string: "\(AppSettings.serverBaseUrl)/api/telemetry"),
+        guard let endpoint = URL(string: "\(AppSettings.assetsBaseUrl)/api/telemetry"),
               let jsonData = try? JSONSerialization.data(withJSONObject: batch, options: []) else {
             return
         }
@@ -88,7 +88,7 @@ public final class RemoteTelemetryExporter {
 
     /// Synchronously sends a fatal uncaught exception event to telemetry server before process termination.
     public func exportCrashSynchronously(name: String, reason: String, callStack: String) {
-        guard let endpoint = URL(string: "\(AppSettings.serverBaseUrl)/api/telemetry") else { return }
+        guard let endpoint = URL(string: "\(AppSettings.assetsBaseUrl)/api/telemetry") else { return }
         var payload: [String: Any] = [
             "event_type": "uncaught_exception",
             "exception_name": name,
