@@ -10,7 +10,13 @@ let package = Package(
         .target(
             name: "DuloCore",
             path: "Sources",
-            sources: ["Data", "Feed/ShuffledVideoQueue.swift", "Feed/PrewarmPolicy.swift"]
+            sources: [
+                "Data",
+                "Feed/ShuffledVideoQueue.swift",
+                "Feed/PrewarmPolicy.swift",
+                // Pure policy, no UIKit dependency: covered by the macOS test loop too.
+                "Player/VideoGravityPolicy.swift",
+            ]
         ),
         .testTarget(
             name: "DuloCoreTests",

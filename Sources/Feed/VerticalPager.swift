@@ -396,8 +396,23 @@ struct VerticalPager: UIViewControllerRepresentable {
             singleCoverImageView.isHidden = false
         }
 
+        /// The fill policy lives on the player layer, not in the player pool:
+        /// `slot.prepare(videoGravity:)` never reached the layer, so gravity is
+        /// applied here, where the current item (and its `ar`) is known.
+        private func applyVideoGravityForCurrentItem() {
+            let gravity = VideoGravityPolicy.gravity(forAspectRatio: currentItem?.video.aspectRatio)
+            singlePlayerView.updateClipping(for: gravity)
+            let layer = singlePlayerView.playerLayer
+            guard layer.videoGravity != gravity else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.videoGravity = gravity
+            CATransaction.commit()
+        }
+
         func attach(slot: FeedPlayerPool.PlayerSlot) {
             guard singlePlayerView.isHidden == false else { return }
+            applyVideoGravityForCurrentItem()
             let alreadyAttached = attachedSlot === slot
                 && singlePlayerView.playerLayer.player === slot.player
                 && observedItem === slot.player.currentItem
@@ -490,7 +505,7 @@ struct VerticalPager: UIViewControllerRepresentable {
 
                     // Start playback first; the cover sits below the player layer and
                     // must never delay the first video frame on a slow image CDN.
-                    self.refreshPlayback(store: store, gravity: .resizeAspect)
+                    self.refreshPlayback(store: store)
                     self.scheduleLeaseRenewal(videoId: video.id, lease: lease)
 
                     if let coverStr, let coverUrl = URL(string: coverStr), self.singleCoverImageView.image == nil {
@@ -627,9 +642,14 @@ struct VerticalPager: UIViewControllerRepresentable {
                 }
             }
         }
-        func refreshPlayback(store: FeedStreamStore, gravity: AVLayerVideoGravity = .resizeAspect) {
+        func refreshPlayback(
+            store: FeedStreamStore,
+            gravity gravityOverride: AVLayerVideoGravity? = nil
+        ) {
+            guard let item = currentItem else { return }
+            let gravity = gravityOverride
+                ?? VideoGravityPolicy.gravity(forAspectRatio: item.video.aspectRatio)
             if ExperimentVariant.stickyPrewarmEnabled {
-                guard let item = currentItem else { return }
                 let role = CellRole.of(
                     streamId: item.streamId,
                     active: store.activeStreamId,
@@ -638,7 +658,6 @@ struct VerticalPager: UIViewControllerRepresentable {
                 applyRole(role, store: store, gravity: gravity)
                 return
             }
-            guard let item = currentItem else { return }
             let isActive = (store.activeStreamId == item.streamId)
             let isPrewarm = (store.prewarmStreamId == item.streamId)
 
