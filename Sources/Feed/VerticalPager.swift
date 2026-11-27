@@ -133,6 +133,9 @@ struct VerticalPager: UIViewControllerRepresentable {
         let motionPlayerView = PlayerLayerContainer()
         private var currentUrl: URL?
         private var imageLoadTask: Task<Void, Never>?
+        /// Item the motion layer has confirmed rendered. Same identity rule as the
+        /// single-video layer: the bare `isReadyForDisplay` flag is not item-scoped.
+        private var motionReadyItem: AVPlayerItem?
 
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -151,8 +154,11 @@ struct VerticalPager: UIViewControllerRepresentable {
             contentView.isOpaque = true
 
             coverImageView.backgroundColor = .black
-            coverImageView.contentMode = .scaleAspectFit
-            coverImageView.clipsToBounds = false
+            // Neutral `.fit` geometry only until `applyContentMode(_:)` runs: the
+            // real mode comes from the owning item's `ar` and is applied before
+            // any pixel of this slide is shown.
+            coverImageView.contentMode = MediaContentMode.fit.imageContentMode
+            coverImageView.clipsToBounds = MediaContentMode.fit.clipsContent
             contentView.addSubview(coverImageView)
 
             motionPlayerView.backgroundColor = .clear
@@ -176,33 +182,87 @@ struct VerticalPager: UIViewControllerRepresentable {
             imageLoadTask = nil
             currentUrl = nil
             coverImageView.image = nil
+            // Drop the previous item's fill/fit state so nothing can be inherited
+            // by the next slide that reuses this cell.
+            coverImageView.contentMode = MediaContentMode.fit.imageContentMode
+            coverImageView.clipsToBounds = MediaContentMode.fit.clipsContent
             detachMotion()
+        }
+
+        /// One mode for both surfaces of this slide: the still cover and the Live
+        /// Photo motion layer. `GallerySlide` carries no `ar` of its own, so the
+        /// owner passes the already resolved item mode (`.fit` when unusable).
+        /// Must run before the cover image is assigned: the image then appears
+        /// already fill/fit instead of re-laying out under the motion layer.
+        func applyContentMode(_ mode: MediaContentMode) {
+            let gravity = mode.videoGravity
+            coverImageView.contentMode = mode.imageContentMode
+            coverImageView.clipsToBounds = mode.clipsContent
+            // `resizeAspectFill` paints past the layer bounds: clip exactly then.
+            motionPlayerView.updateClipping(for: gravity)
+            let layer = motionPlayerView.playerLayer
+            guard layer.videoGravity != gravity else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.videoGravity = gravity
+            CATransaction.commit()
         }
 
         func detachMotion() {
             motionPlayerView.playerLayer.player = nil
             motionPlayerView.alpha = 0.0
             motionPlayerView.onReadyForDisplay = nil
+            // Detach path: readiness is item-bound, drop the token with the layer.
+            motionReadyItem = nil
         }
 
-        func attachMotion(slot: FeedPlayerPool.PlayerSlot) {
-            if motionPlayerView.playerLayer.player !== slot.player {
-                motionPlayerView.playerLayer.player = slot.player
+        /// `true` only when the layer flag refers to the item we bound readiness
+        /// to; right after a swap it can still be the previous item's `true`.
+        private func isMotionReady(for player: AVPlayer) -> Bool {
+            guard let motionReadyItem, player.currentItem === motionReadyItem else { return false }
+            return motionPlayerView.playerLayer.isReadyForDisplay
+        }
+
+        func attachMotion(slot: FeedPlayerPool.PlayerSlot, mode: MediaContentMode) {
+            // Re-assert geometry on every (re)attach: a sticky-prewarm slot can
+            // take over a layer that still carries the previous item's gravity.
+            applyContentMode(mode)
+            let player = slot.player
+            if motionPlayerView.playerLayer.player !== player {
+                motionPlayerView.playerLayer.player = player
+                // New player: whatever the flag says belongs to the old one.
+                motionReadyItem = nil
             }
-            if motionPlayerView.playerLayer.isReadyForDisplay {
+            if motionReadyItem !== player.currentItem {
+                motionReadyItem = nil
+            }
+            if isMotionReady(for: player) {
                 motionPlayerView.alpha = 1.0
-            } else {
-                motionPlayerView.alpha = 0.0
-                motionPlayerView.onReadyForDisplay = { [weak self] in
-                    guard let self else { return }
-                    UIView.animate(withDuration: 0.15, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
-                        self.motionPlayerView.alpha = 1.0
-                    }
-                }
+                return
+            }
+            motionPlayerView.alpha = 0.0
+            motionPlayerView.onReadyForDisplay = { [weak self] in
+                self?.markMotionReadyFromLayerCallback()
             }
         }
 
-        func configure(slide: GallerySlide) {
+        /// Binds the layer's ready event to the item the player holds right now,
+        /// then fades the motion layer in. The cover underneath stays authoritative
+        /// until this point, so a stale `true` can never expose the prior frame.
+        private func markMotionReadyFromLayerCallback() {
+            guard let player = motionPlayerView.playerLayer.player,
+                  motionPlayerView.playerLayer.isReadyForDisplay,
+                  let item = player.currentItem else { return }
+            motionReadyItem = item
+            UIView.animate(withDuration: 0.15, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
+                self.motionPlayerView.alpha = 1.0
+            }
+        }
+
+        func configure(slide: GallerySlide, mode: MediaContentMode) {
+            // Geometry first, pixels second: the cover must never be shown in the
+            // previous slide's fill/fit state and then jump.
+            applyContentMode(mode)
             guard let url = URL(string: slide.imageUrl) else { return }
             currentUrl = url
 
@@ -254,6 +314,23 @@ struct VerticalPager: UIViewControllerRepresentable {
         private var itemStatusObservation: NSKeyValueObservation?
         private var itemFailureObserver: NSObjectProtocol?
         private weak var observedItem: AVPlayerItem?
+        /// The item this layer has *confirmed* rendered. `isReadyForDisplay` is
+        /// delivered asynchronously by KVO, so the bare flag can still be the
+        /// replaced item's `true`; readiness is only trusted together with this
+        /// identity token (see `isLayerReady(for:)`).
+        private var readyItem: AVPlayerItem?
+        /// KVO on the slot player's `currentItem`. The pool's foreground heal
+        /// replaces the item without going through `attach`, which would otherwise
+        /// leave `alpha == 1` over a blank layer (black flash).
+        private var playerCurrentItemObservation: NSKeyValueObservation?
+        /// Player the observation above is bound to, so a repeated `attach` of the
+        /// same slot does not churn KVO registration.
+        private weak var observedCurrentItemPlayer: AVPlayer?
+        /// One-shot backstop for a ready event that never arrives (a layer that
+        /// keeps `isReadyForDisplay == true` across an item swap produces no
+        /// transition to observe). Invalidated by `clearReadyState()`.
+        private var pendingRevealFallback: Task<Void, Never>?
+        private var revealSequence: UInt64 = 0
         private var isRecoveringLease = false
         private(set) var appliedRole: CellRole?
 
@@ -286,9 +363,11 @@ struct VerticalPager: UIViewControllerRepresentable {
 
             // 1. Single video mode setup
             singleCoverImageView.backgroundColor = .black
-            singleCoverImageView.contentMode = .scaleAspectFit
+            // Neutral `.fit` only: `applyVideoGravityForCurrentItem()` resolves the
+            // item's `ar` and sets the real image mode before the cover is shown.
+            singleCoverImageView.contentMode = MediaContentMode.fit.imageContentMode
             singleCoverImageView.isOpaque = true
-            singleCoverImageView.clipsToBounds = false
+            singleCoverImageView.clipsToBounds = MediaContentMode.fit.clipsContent
             contentView.addSubview(singleCoverImageView)
 
             singlePlayerView.backgroundColor = .clear
@@ -366,6 +445,10 @@ struct VerticalPager: UIViewControllerRepresentable {
 
             detachPlayer()
             singleCoverImageView.image = nil
+            // Neutral geometry for the outgoing item; `configure` re-applies the
+            // next item's mode before any of its pixels are shown.
+            singleCoverImageView.contentMode = MediaContentMode.fit.imageContentMode
+            singleCoverImageView.clipsToBounds = MediaContentMode.fit.clipsContent
             currentItem = nil
             resolvedPlayUrl = nil
             currentBgmUrl = nil
@@ -388,6 +471,10 @@ struct VerticalPager: UIViewControllerRepresentable {
             let hadAttachment = attachedSlot != nil || singlePlayerView.playerLayer.player != nil
             attachedSlot = nil
             clearItemObservers()
+            // Detach path: drop both readiness sources so a late KVO delivery can
+            // never reveal a layer that is no longer ours.
+            invalidatePlayerCurrentItemObservation()
+            clearReadyState()
             if hadAttachment { FeedPlayerPool.noteLayerDetach() }
             singlePlayerView.resetDetachedPlayer()
             singlePlayerView.playerLayer.player = nil
@@ -396,11 +483,145 @@ struct VerticalPager: UIViewControllerRepresentable {
             singleCoverImageView.isHidden = false
         }
 
-        /// The fill policy lives on the player layer, not in the player pool:
+        // MARK: - Item-bound readiness (single video layer)
+
+        /// `true` only when the layer's own flag refers to the very item we bound
+        /// readiness to. The flag alone is not item-scoped: right after a player or
+        /// item swap it can still carry the previous item's `true`.
+        private func isLayerReady(for player: AVPlayer) -> Bool {
+            guard let readyItem, player.currentItem === readyItem else { return false }
+            return singlePlayerView.playerLayer.isReadyForDisplay
+        }
+
+        /// Nulls the readiness token and retires any pending backstop. Called on
+        /// every item identity change.
+        private func clearReadyState() {
+            readyItem = nil
+            revealSequence &+= 1
+            pendingRevealFallback?.cancel()
+            pendingRevealFallback = nil
+        }
+
+        private func invalidatePlayerCurrentItemObservation() {
+            playerCurrentItemObservation?.invalidate()
+            playerCurrentItemObservation = nil
+            observedCurrentItemPlayer = nil
+        }
+
+        /// Watches the slot player's current item: a foreground heal can swap it
+        /// behind our back, and the cell must fall back to the cover instead of
+        /// showing an already-empty layer. Re-attaching the same player is a no-op,
+        /// so this stays cheap on role flips and page settles.
+        private func observePlayerCurrentItem(_ player: AVPlayer) {
+            if playerCurrentItemObservation != nil, observedCurrentItemPlayer === player { return }
+            invalidatePlayerCurrentItemObservation()
+            observedCurrentItemPlayer = player
+            playerCurrentItemObservation = player.observe(\.currentItem, options: [.new]) { [weak self] _, _ in
+                Task { @MainActor [weak self] in
+                    self?.handlePlayerItemChanged()
+                }
+            }
+        }
+
+        /// Item swapped under us: readiness now belongs to the replaced item, so
+        /// hide the video, re-show the cover and wait for the new item's frame 0.
+        private func handlePlayerItemChanged() {
+            guard let slot = attachedSlot,
+                  singlePlayerView.playerLayer.player === slot.player else { return }
+            clearReadyState()
+            guard singlePlayerView.isHidden == false else { return }
+            singlePlayerView.alpha = 0.0
+            singleCoverImageView.isHidden = false
+            // Rebind the failure watch to the new item, then wait for its frame.
+            observeItemStatus(slot.player.currentItem, videoId: currentItem?.video.id)
+            armReadyReveal()
+        }
+
+        /// Cover visible, video hidden, reveal armed for the *next* item-bound
+        /// ready event. Idempotent: safe on every attach / role flip.
+        private func armReadyReveal() {
+            singlePlayerView.alpha = 0.0
+            singleCoverImageView.isHidden = false
+            singlePlayerView.onReadyForDisplay = { [weak self] in
+                self?.markReadyFromLayerCallback()
+            }
+            scheduleRevealBackstop()
+        }
+
+        /// A layer that never flips `isReadyForDisplay` back to `false` on an item
+        /// swap emits no transition, so the cover would stay up forever. By this
+        /// point the new item's first frame has certainly been presented, so
+        /// binding it and revealing is safe; the guard on the flag still applies.
+        private func scheduleRevealBackstop() {
+            revealSequence &+= 1
+            let sequence = revealSequence
+            pendingRevealFallback?.cancel()
+            pendingRevealFallback = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 320_000_000)
+                guard !Task.isCancelled, let self, self.revealSequence == sequence else { return }
+                self.pendingRevealFallback = nil
+                self.markReadyFromLayerCallback()
+            }
+        }
+
+        /// `PlayerLayerContainer.onReadyForDisplay` is driven by KVO on the layer
+        /// flag, which is not item-scoped by itself. Attribute the event to the item
+        /// the player holds *now*, then reveal.
+        private func markReadyFromLayerCallback() {
+            guard let slot = attachedSlot,
+                  singlePlayerView.playerLayer.player === slot.player,
+                  singlePlayerView.playerLayer.isReadyForDisplay,
+                  let item = slot.player.currentItem else { return }
+            let isFirstReveal = readyItem !== item
+            readyItem = item
+            if isFirstReveal, let vid = currentItem?.video.id {
+                AVTelemetryTracker.shared.recordReadyForDisplay(for: vid)
+            }
+            revealReadyLayer()
+        }
+
+        /// Fade the layer in and retire the cover. Both steps re-check the bound
+        /// item: an item swap can land between the reveal and the fade completion.
+        private func revealReadyLayer() {
+            guard let slot = attachedSlot, isLayerReady(for: slot.player) else { return }
+            guard singlePlayerView.alpha != 1.0 else {
+                singleCoverImageView.isHidden = true
+                return
+            }
+            UIView.animate(withDuration: 0.12, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
+                self.singlePlayerView.alpha = 1.0
+            } completion: { [weak self] _ in
+                guard let self,
+                      let slot = self.attachedSlot,
+                      self.readyItem === slot.player.currentItem,
+                      self.singlePlayerView.playerLayer.isReadyForDisplay else { return }
+                self.singleCoverImageView.isHidden = true
+            }
+        }
+
+        /// The one resolution point for this cell. Video layer, cover image,
+        /// gallery slides and Live Photo layers all read *this* mode for the same
+        /// item, so cover → first frame can never change scale.
+        private var currentContentMode: MediaContentMode {
+            VideoGravityPolicy.mode(forAspectRatio: currentItem?.video.aspectRatio)
+        }
+
+        /// The fill policy lives on the view, not in the player pool:
         /// `slot.prepare(videoGravity:)` never reached the layer, so gravity is
         /// applied here, where the current item (and its `ar`) is known.
+        /// Applies the resolved mode to the single-video surfaces: the player
+        /// layer (gravity + clipping) and the cover image underneath it.
         private func applyVideoGravityForCurrentItem() {
-            let gravity = VideoGravityPolicy.gravity(forAspectRatio: currentItem?.video.aspectRatio)
+            let mode = currentContentMode
+            let gravity = mode.videoGravity
+
+            // Cover first: it must already occupy its final fill/fit box before
+            // the layer fades in over it.
+            singleCoverImageView.contentMode = mode.imageContentMode
+            singleCoverImageView.clipsToBounds = mode.clipsContent
+
+            // `resizeAspectFill` draws past the layer bounds: clip exactly when
+            // the mode is fill, stay unclipped for fit.
             singlePlayerView.updateClipping(for: gravity)
             let layer = singlePlayerView.playerLayer
             guard layer.videoGravity != gravity else { return }
@@ -410,42 +631,63 @@ struct VerticalPager: UIViewControllerRepresentable {
             CATransaction.commit()
         }
 
+        /// Re-applies the current mode to every surface this cell owns. Safe to
+        /// call on each item/slide/role/resolve transition: the writes are
+        /// idempotent and never trigger a layout pass or Auto Layout.
+        private func applyContentMode() {
+            applyVideoGravityForCurrentItem()
+            applyContentModeToGallerySlides(currentContentMode)
+        }
+
+        /// Gallery slides inherit the item's mode (a slide has no `ar` of its
+        /// own). Newly dequeued cells get it in `cellForItemAt`; this covers the
+        /// slides already realized on screen.
+        private func applyContentModeToGallerySlides(_ mode: MediaContentMode) {
+            guard let cv = horizontalCollectionView else { return }
+            for case let cell as GallerySlideCell in cv.visibleCells {
+                cell.applyContentMode(mode)
+            }
+        }
+
         func attach(slot: FeedPlayerPool.PlayerSlot) {
             guard singlePlayerView.isHidden == false else { return }
-            applyVideoGravityForCurrentItem()
+            // Single choke point for sticky-prewarm take-over and re-attach:
+            // resolve this item's mode before any surface is presented, and never
+            // inherit the mode of the page that occupied this cell before.
+            applyContentMode()
+
+            let player = slot.player
+            let item = player.currentItem
+            // Readiness belongs to an item identity. If the identity moved (reuse,
+            // take-over, heal) the old `true` is void before anything is presented.
+            if readyItem !== item { clearReadyState() }
+
             let alreadyAttached = attachedSlot === slot
-                && singlePlayerView.playerLayer.player === slot.player
-                && observedItem === slot.player.currentItem
+                && singlePlayerView.playerLayer.player === player
+                && observedItem === item
             if alreadyAttached, ExperimentVariant.stickyPrewarmEnabled {
-                if singlePlayerView.playerLayer.isReadyForDisplay {
-                    singlePlayerView.alpha = 1.0
-                    singleCoverImageView.isHidden = true
+                // Take-over fast path: reveal only on item-bound readiness, else
+                // fall back to the cover and wait for this item's frame 0.
+                if isLayerReady(for: player) {
+                    revealReadyLayer()
+                } else {
+                    armReadyReveal()
                 }
                 return
             }
             attachedSlot = slot
-            observeItemStatus(slot.player.currentItem, videoId: currentItem?.video.id)
-            if singlePlayerView.playerLayer.player !== slot.player {
-                singlePlayerView.playerLayer.player = slot.player
+            // Watch the player's item from now on: the foreground heal may replace
+            // it without another attach, and that must not stay behind alpha 1.
+            observePlayerCurrentItem(player)
+            observeItemStatus(item, videoId: currentItem?.video.id)
+            if singlePlayerView.playerLayer.player !== player {
+                singlePlayerView.playerLayer.player = player
                 FeedPlayerPool.noteLayerAttachChanged()
             }
-            if singlePlayerView.playerLayer.isReadyForDisplay {
-                singlePlayerView.alpha = 1.0
-                singleCoverImageView.isHidden = true
+            if isLayerReady(for: player) {
+                revealReadyLayer()
             } else {
-                singlePlayerView.alpha = 0.0
-                singleCoverImageView.isHidden = false
-                singlePlayerView.onReadyForDisplay = { [weak self] in
-                    guard let self else { return }
-                    if let vid = self.currentItem?.video.id {
-                        AVTelemetryTracker.shared.recordReadyForDisplay(for: vid)
-                    }
-                    UIView.animate(withDuration: 0.12, delay: 0, options: [.curveLinear, .beginFromCurrentState]) {
-                        self.singlePlayerView.alpha = 1.0
-                    } completion: { _ in
-                        self.singleCoverImageView.isHidden = true
-                    }
-                }
+                armReadyReveal()
             }
         }
 
@@ -454,9 +696,19 @@ struct VerticalPager: UIViewControllerRepresentable {
             viewModel: FeedViewModel,
             store: FeedStreamStore
         ) {
+            // Item switch: readiness is bound to the outgoing item's identity.
+            if currentItem?.streamId != item.streamId {
+                clearReadyState()
+            }
             currentItem = item
             currentViewModel = viewModel
             currentStore = store
+            // Item switch: resolve geometry synchronously, before the cover probe
+            // below assigns an image. Deliberately only the single-video surfaces:
+            // the gallery collection view may still hold the *previous* item's
+            // slides, and the `.gallery` resolve branch re-modes them after its
+            // own reload. Nothing is inherited either way.
+            applyVideoGravityForCurrentItem()
             if ExperimentVariant.stickyPrewarmEnabled,
                let attached = attachedSlot,
                attached.currentStreamId != item.streamId {
@@ -502,6 +754,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                     self.singleCoverImageView.isHidden = false
                     self.singlePlayerView.isHidden = false
                     self.horizontalCollectionView?.reloadData()
+                    // Re-resolve landing after a reuse (or after `ar` arrived):
+                    // re-assert the mode before the cover or the first frame shows.
+                    self.applyVideoGravityForCurrentItem()
 
                     // Start playback first; the cover sits below the player layer and
                     // must never delay the first video frame on a slow image CDN.
@@ -545,6 +800,11 @@ struct VerticalPager: UIViewControllerRepresentable {
                     galleryCv.layoutIfNeeded()
                     CATransaction.commit()
                     self.isReconfiguring = false
+
+                    // Slides have no independent `ar`: they inherit this item's
+                    // mode (`.fit` when unusable). Slide 0 is realized now, so
+                    // push the mode onto it before the first image lands.
+                    self.applyContentModeToGallerySlides(self.currentContentMode)
 
                     self.refreshPlayback(store: store)
                 }
@@ -635,8 +895,11 @@ struct VerticalPager: UIViewControllerRepresentable {
                     }
                 case .notFound:
                     // Skip is owned by the pager; leave the cover visible rather
-                    // than retrying the same dead URL forever.
+                    // than retrying the same dead URL forever. The cover must be
+                    // un-hidden too, otherwise the page stays black.
+                    self.clearReadyState()
                     self.singlePlayerView.alpha = 0.0
+                    self.singleCoverImageView.isHidden = false
                 default:
                     break
                 }
@@ -647,8 +910,11 @@ struct VerticalPager: UIViewControllerRepresentable {
             gravity gravityOverride: AVLayerVideoGravity? = nil
         ) {
             guard let item = currentItem else { return }
-            let gravity = gravityOverride
-                ?? VideoGravityPolicy.gravity(forAspectRatio: item.video.aspectRatio)
+            // Every refresh is a transition (page change, role change, lease
+            // recovery): re-derive this item's mode instead of trusting whatever
+            // the previous page left on the surfaces.
+            applyContentMode()
+            let gravity = gravityOverride ?? currentContentMode.videoGravity
             if ExperimentVariant.stickyPrewarmEnabled {
                 let role = CellRole.of(
                     streamId: item.streamId,
@@ -733,9 +999,13 @@ struct VerticalPager: UIViewControllerRepresentable {
         func applyRole(
             _ role: CellRole,
             store: FeedStreamStore,
-            gravity: AVLayerVideoGravity = .resizeAspect
+            gravity gravityOverride: AVLayerVideoGravity? = nil
         ) {
             guard let item = currentItem else { return }
+            // Role flips are prewarm take-overs: the surfaces must carry *this*
+            // item's mode, not the one the slot was prepared with earlier.
+            applyContentMode()
+            let gravity = gravityOverride ?? currentContentMode.videoGravity
 
             switch cellMode {
             case .video(let playUrl):
@@ -758,7 +1028,9 @@ struct VerticalPager: UIViewControllerRepresentable {
                         )
                     }
                     attach(slot: slot)
-                    if singlePlayerView.playerLayer.isReadyForDisplay {
+                    // Same identity rule as the reveal path: a bare flag here can
+                    // still be the replaced item's readiness.
+                    if isLayerReady(for: slot.player) {
                         AVTelemetryTracker.shared.recordReadyForDisplay(for: item.video.id)
                     }
                     FeedPlayerPool.shared.ensurePlaying(slot: slot, streamId: item.streamId)
@@ -847,16 +1119,18 @@ struct VerticalPager: UIViewControllerRepresentable {
                     visibleStreamIds: [self.currentItem?.streamId ?? 0]
                 )
                 let slideKey = "\(self.currentItem?.video.id ?? "feed")_\(slide.id)"
+                // The motion layer renders the same post as its cover: same mode.
+                let mode = self.currentContentMode
                 slot.prepare(
                     streamId: self.currentItem?.streamId ?? 0,
                     videoId: slideKey,
                     playUrl: motionUrl,
                     isMuted: true,
                     autoplay: true,
-                    videoGravity: .resizeAspect,
+                    videoGravity: mode.videoGravity,
                     disableAudioTracks: true
                 )
-                cell.attachMotion(slot: slot)
+                cell.attachMotion(slot: slot, mode: mode)
             }
         }
 
@@ -871,7 +1145,9 @@ struct VerticalPager: UIViewControllerRepresentable {
             guard indexPath.item >= 0 && indexPath.item < currentSlides.count else {
                 return cell
             }
-            cell.configure(slide: currentSlides[indexPath.item])
+            // Dequeued cells are reused across items: hand over the resolved mode
+            // so the cover renders in its final fill/fit box immediately.
+            cell.configure(slide: currentSlides[indexPath.item], mode: currentContentMode)
             return cell
         }
 
@@ -922,6 +1198,10 @@ struct VerticalPager: UIViewControllerRepresentable {
 
             if newIndex != currentSlideIndex && newIndex >= 0 && newIndex < currentSlides.count {
                 currentSlideIndex = newIndex
+                // Slide switch: the incoming slide must not inherit the outgoing
+                // one's fill/fit state. Idempotent, no layout pass, and this
+                // branch only runs when the index actually changes.
+                applyContentModeToGallerySlides(currentContentMode)
                 // Detach previous slide's motion
                 FeedPlayerPool.shared.activeSlot.clear()
 

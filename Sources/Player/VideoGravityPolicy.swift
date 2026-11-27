@@ -1,19 +1,50 @@
 import AVFoundation
 
-/// Rendering policy for the zero-UI feed.
+#if canImport(UIKit)
+import UIKit
+#endif
+
+/// How one piece of media should occupy the feed canvas.
 ///
-/// Portrait content fills the canvas (edges are cropped, which is accepted);
-/// landscape and square content keep `AVPlayerLayer`'s default fit so nothing is
-/// lost. Both platforms are portrait-locked, so the policy depends only on the
-/// item's aspect ratio and never on the canvas.
-///
-/// Contract: `Dulo-server/docs/video-layout.md`.
-enum VideoGravityPolicy {
-    /// `ar` is `width / height`, rounded to two decimals by the server.
-    static func gravity(forAspectRatio aspectRatio: Double?) -> AVLayerVideoGravity {
+/// Contract: `Dulo-server/docs/video-layout.md`. Portrait items fill (edges are
+/// cropped, accepted); landscape and square items keep their full frame and
+/// letterbox. Every surface that draws media — video layer, cover image, gallery
+/// image, live-photo layer — must resolve to the *same* mode for the same item,
+/// otherwise the cross-fade between cover and first frame jumps.
+enum MediaContentMode: Equatable {
+    case fill
+    case fit
+
+    /// `aspectRatio` is `width / height`; nil or non-positive falls back to fit.
+    static func resolve(aspectRatio: Double?) -> MediaContentMode {
         guard let aspectRatio, aspectRatio.isFinite, aspectRatio > 0 else {
-            return .resizeAspect
+            return .fit
         }
-        return aspectRatio < 1 ? .resizeAspectFill : .resizeAspect
+        return aspectRatio < 1 ? .fill : .fit
+    }
+
+    var videoGravity: AVLayerVideoGravity {
+        self == .fill ? .resizeAspectFill : .resizeAspect
+    }
+
+    /// `fill` draws past the view's bounds, so every host view must clip exactly
+    /// when the mode is `fill`.
+    var clipsContent: Bool { self == .fill }
+
+    #if canImport(UIKit)
+    var imageContentMode: UIImageView.ContentMode {
+        self == .fill ? .scaleAspectFill : .scaleAspectFit
+    }
+    #endif
+}
+
+/// Thin façade kept for call sites that only need the layer gravity.
+enum VideoGravityPolicy {
+    static func mode(forAspectRatio aspectRatio: Double?) -> MediaContentMode {
+        MediaContentMode.resolve(aspectRatio: aspectRatio)
+    }
+
+    static func gravity(forAspectRatio aspectRatio: Double?) -> AVLayerVideoGravity {
+        mode(forAspectRatio: aspectRatio).videoGravity
     }
 }
