@@ -157,7 +157,7 @@ public final class TelemetryUploader {
     /// The static Caddy origin that replaced the app backend (manifest, telemetry
     /// and dislikes). This literal is the single swap point for
     /// `AppSettings.staticBaseUrl` once that constant lands.
-    public static let defaultBaseURL = URL(string: "http://192.168.2.3:8082")!
+    public static let defaultBaseURL = URL(string: AppSettings.assetsBaseUrl)!
 
     /// Process-wide uploader. `start()`s itself so the app only has to submit.
     public static let shared: TelemetryUploader = {

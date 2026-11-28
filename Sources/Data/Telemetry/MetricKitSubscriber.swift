@@ -23,11 +23,8 @@ public final class DuloMetricKitSubscriber: NSObject, MXMetricManagerSubscriber 
     public func didReceive(_ payloads: [MXMetricPayload]) {
         for payload in payloads {
             let data = payload.jsonRepresentation()
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                RemoteTelemetryExporter.shared.submit(event: [
-                    "event_type": "metrickit_metric_payload",
-                    "payload": json
-                ])
+            if let json = String(data: data, encoding: .utf8) {
+                TelemetryUploader.shared.submit(MetricKitTelemetry(kind: .metric, payloadJSON: json))
             }
         }
     }
@@ -35,11 +32,8 @@ public final class DuloMetricKitSubscriber: NSObject, MXMetricManagerSubscriber 
     public func didReceive(_ payloads: [MXDiagnosticPayload]) {
         for payload in payloads {
             let data = payload.jsonRepresentation()
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                RemoteTelemetryExporter.shared.submit(event: [
-                    "event_type": "metrickit_diagnostic_payload",
-                    "payload": json
-                ])
+            if let json = String(data: data, encoding: .utf8) {
+                TelemetryUploader.shared.submit(MetricKitTelemetry(kind: .diagnostic, payloadJSON: json))
             }
         }
     }

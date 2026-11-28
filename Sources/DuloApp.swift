@@ -22,17 +22,20 @@ struct DuloApp: App {
     @StateObject private var viewModel = FeedViewModel()
 
     init() {
+        // Drains anything the previous run could not deliver; harmless if the
+        // sink is unreachable.
+        TelemetryUploader.shared.start()
         #if canImport(Foundation)
         NSSetUncaughtExceptionHandler { exception in
             let stack = exception.callStackSymbols.joined(separator: "\n")
             let reason = exception.reason ?? "unknown reason"
             let name = exception.name.rawValue
             NSLog("[FATAL UNCAUGHT EXCEPTION] %@: %@\n%@", name, reason, stack)
-            RemoteTelemetryExporter.shared.exportCrashSynchronously(
+            TelemetryUploader.shared.submitSynchronously(UncaughtExceptionTelemetry(
                 name: name,
                 reason: reason,
                 callStack: stack
-            )
+            ))
         }
         #endif
         // Must run before LocalMediaProxyServer touches MediaCacheStorage.
