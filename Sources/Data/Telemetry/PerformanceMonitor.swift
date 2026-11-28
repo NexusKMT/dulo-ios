@@ -151,22 +151,21 @@ public final class PerformanceMonitor: ObservableObject {
 
         #if canImport(QuartzCore)
         let now = CACurrentMediaTime()
-        if now - lastTelemetryReportTime >= 3.0 {
+        if now - lastTelemetryReportTime >= 60.0 {
             lastTelemetryReportTime = now
             Task { @MainActor [weak self, footprintMB, cpuUsage] in
                 guard let self = self else { return }
                 let snap = self.currentSnapshot
                 let decoders = AVTelemetryTracker.shared.activeDecoderCount
-                RemoteTelemetryExporter.shared.submit(event: [
-                    "event_type": "perf_snapshot",
-                    "fps": snap.fps,
-                    "hitch_ratio_ms_per_sec": snap.hitchRatioMsPerSec,
-                    "dropped_frames": snap.droppedFramesCount,
-                    "memory_mb": footprintMB,
-                    "cpu_percent": cpuUsage,
-                    "thermal_state": "\(snap.thermalState.rawValue)",
-                    "active_decoders": decoders
-                ])
+                TelemetryUploader.shared.submit(PerfSnapshotTelemetry(
+                    fps: snap.fps,
+                    hitchRatioMsPerSec: snap.hitchRatioMsPerSec,
+                    droppedFrames: snap.droppedFramesCount,
+                    memoryMB: footprintMB,
+                    cpuPercent: cpuUsage,
+                    thermalState: snap.thermalState.rawValue,
+                    activeDecoders: decoders
+                ))
             }
         }
         #endif

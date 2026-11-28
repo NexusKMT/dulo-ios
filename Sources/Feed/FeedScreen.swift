@@ -240,7 +240,9 @@ private struct FeedDebugHUD: View {
         var request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 10)
         request.httpMethod = "POST"
         Task.detached {
-            _ = try? await URLSession.shared.data(for: request)
+            let status = (try? await URLSession.shared.data(for: request))
+                .flatMap { ($0.1 as? HTTPURLResponse)?.statusCode }
+            TelemetryUploader.shared.submit(DislikeTelemetry(videoID: id, status: status))
         }
     }
 }

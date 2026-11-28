@@ -156,15 +156,15 @@ public final class AVTelemetryTracker: ObservableObject {
             self.latestTelemetry = updatedTelemetry
         }
 
-        // Asynchronously report to remote exporter
-        RemoteTelemetryExporter.shared.submit(event: [
-            "event_type": "video_startup_trace",
-            "video_id": videoId,
-            "ttff_ms": elapsedMs,
-            "cache_tier": updatedTelemetry.cacheTier,
-            "cache_hit": updatedTelemetry.isCacheHit,
-            "timestamp": Date().timeIntervalSince1970
-        ])
+        // `ttffMs` currently measures trigger -> frame: the resolve-start half is
+        // owned by the resolver wiring and will be threaded through here next.
+        TelemetryUploader.shared.submit(FirstFrameTelemetry(
+            videoID: videoId,
+            ttffMs: elapsedMs,
+            triggerToFrameMs: elapsedMs,
+            cacheTier: updatedTelemetry.cacheTier,
+            cacheHit: updatedTelemetry.isCacheHit
+        ))
     }
 
     // MARK: - AVPlayerItem Access & Error Log Handlers

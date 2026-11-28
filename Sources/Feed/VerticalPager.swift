@@ -1744,47 +1744,14 @@ struct VerticalPager: UIViewControllerRepresentable {
                 dragPrewarmSwitches += 1
             }
 
-            var event: [String: Any] = [
-                "event_type": "prewarm_switch",
-                "reason": reason,
-                "delta_pages": deltaPages,
-                "velocity_y": velocityY,
-                "is_dragging": isDragging,
-                "anchor_index": prewarmAnchorIndex
-            ]
-            if let from { event["from_sid"] = from }
-            if let to { event["to_sid"] = to }
-            if let fromDirection { event["from_direction"] = fromDirection.rawValue }
-            if let toDirection { event["to_direction"] = toDirection.rawValue }
-            RemoteTelemetryExporter.shared.submit(event: event)
+            // Prewarm switches are no longer reported: the typed schema has no
+            // column for them and the counters still drive the prewarm policy.
         }
 
         private func finishDragWindow() {
             guard let start = dragStartTime else { return }
             dragStartTime = nil
-            let counters = FeedPlayerPool.snapshotAndResetDragCounters()
-            let durationMs = (CACurrentMediaTime() - start) * 1000.0
-            RemoteTelemetryExporter.shared.submit(event: [
-                "event_type": "drag_window",
-                "duration_ms": durationMs,
-                "start_pages": dragStartOffsetPages,
-                "end_pages": dragEndOffsetPages,
-                "max_abs_delta_pages": dragMaxAbsDeltaPages,
-                "direction_reversals": dragDirectionReversals,
-                "prewarm_switches": dragPrewarmSwitches,
-                "refresh_calls": dragRefreshCalls,
-                "apply_role_calls": dragApplyRoleCalls,
-                "prefetch_calls": dragPrefetchCalls,
-                "cancel_prefetch_calls": dragCancelPrefetchCalls,
-                "prepare_new_item": counters.prepareNewItem,
-                "prepare_reuse": counters.prepareReuse,
-                "prepare_reuse_pause": counters.prepareReusePause,
-                "slot_clears": counters.slotClears,
-                "layer_attach_changed": counters.layerAttachChanged,
-                "layer_detach": counters.layerDetach,
-                "settled_page_changed": store.activeStreamId != dragStartActiveStreamId,
-                "anchor_index": prewarmAnchorIndex
-            ])
+            FeedPlayerPool.snapshotAndResetDragCounters()
         }
 
         func preloadAhead(from index: Int) {
