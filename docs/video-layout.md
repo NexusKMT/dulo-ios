@@ -69,8 +69,8 @@ constant `720x720` for them, which is a placeholder, not geometry — emitting i
 would make every image post look square and crop vertical ones. Until the post is
 resolved they render as `.fit`.
 
-Geometry for an image post comes per slide, from `/resolve`: `aweme_detail.images[i]`
-carries real `width`/`height` (verified against live posts, mixed orientations
+Geometry for an image post comes per slide, from the in-app slim detail:
+`aweme_detail.images[i]` carries real `width`/`height` (verified against live posts, mixed orientations
 inside one post are common), so each slide is emitted as
 
 ```json
@@ -95,17 +95,18 @@ missing upstream) inherits `.fit`.
 ```
 
 `schemaVersion` stays `1`: the field is additive and older clients must ignore
-it. `GET /resolve/{aweme_id}` already returns `width`/`height` and remains
-authoritative if `ar` is absent.
+it. When `ar` is absent the app falls back to the `width`/`height` of its in-app
+slim-detail response; the old `GET /resolve/{aweme_id}` no longer exists.
 
 Cost: 28,288 items × ~9 bytes ≈ **+270 KB** on a 6.8 MB manifest.
 
-## Server change points
+## Producer change points
+
+The FastAPI app is gone; the manifest is built offline and served by Caddy.
 
 1. `tools/build_catalog.py` — write `ar` next to `title`/`desc`.
-2. `app.py::_load_catalog` — pass `ar` through (drop unknown values).
-3. `app.py::manifest` — include `ar` when present.
-4. `README.md` — one line under *Data* pointing at this file.
+2. `tools/build_manifest.py` — pass `ar` through (drop unknown values) when it
+   renders `public/manifest.json`.
 
 ## Client contract
 
@@ -146,7 +147,8 @@ Snapshot all six in CI; assert on `videoGravity`, not on pixels.
 
 ## Rollout
 
-1. Server writes `ar` (catalog, then manifest). Old clients ignore it.
-2. Client reads `ar`; when absent it keeps `.resizeAspect` until `/resolve`
-   returns `width`/`height`, then re-lays out once.
+1. The catalog builder writes `ar`; `build_manifest.py` passes it through. Old
+   clients ignore it.
+2. The client reads `ar`; when it is absent it keeps `.resizeAspect` until the
+   in-app resolver returns `width`/`height`, then re-lays out once.
 3. Verify `/health` counters and one `?force=1` resolve per platform.

@@ -1,14 +1,14 @@
 # Dulo iOS
 
-SwiftUI 全量重写的 Dulo iOS 客户端（Android 版：`dev.dulo.player`）。纵向无限信息流，服务端（`Dulo-server`）零改动。面向 TrollStore 侧载分发，不做 App Store 上架。
+SwiftUI 全量重写的 Dulo iOS 客户端（Android 版：`dev.dulo.player`）。纵向无限信息流。应用服务端已不存在：只剩一个 Caddy 静态源托管 manifest 与两个 append-only sink。面向 TrollStore 侧载分发，不做 App Store 上架。
 
 ## 架构
 
-- `Sources/Data` — 清单/lease 数据层（对应 Android 同名 Kotlin 包）：`/manifest.json` 身份列表、`/resolve/{id}` 按需铸造播放 URL；确定性 LRU lease 缓存，播放页在过期前 60s 尝试续期。
-- `Sources/Feed` — 流存储、乱序队列、`UICollectionView` 垂直分页；每页使用 player pool 的 AVPlayer，预加载邻居页。播放 item 失败时以 `?force=1` 重新 resolve，并用新 URL 重建 item。
+- `Sources/Data` — 清单/解析/lease 数据层：`/manifest.json` 身份列表（ETag 命中即 304）；播放地址由 `DouyinClient` 在 App 内直连抖音铸造（slim detail，App feed 兜底），不再有 `/resolve` 接口；确定性 LRU lease 缓存，播放页在过期前 60s 尝试续期。
+- `Sources/Feed` — 流存储、乱序队列、`UICollectionView` 垂直分页；每页使用 player pool 的 AVPlayer，预加载邻居页。播放 item 失败时带 `force` 重新走 App 内解析器，并用新 URL 重建 item。
 - `Sources/Player` — 播放 URL 统一经过本地 HTTP 代理；UA/Referer 由代理注入上游 CDN，不依赖 AVURLAsset 的非公开 header 选项。
 - 音频焦点是单一 owner 状态机；系统中断或耳机拔出后保持暂停，滑动翻页、真正回到前台、插回耳机或显式播放才会恢复，同一页不会自动外放。
-- 服务器地址内化在代码里（`AppSettings.serverBaseUrl` = `http://192.168.2.3:8080`），无设置界面；没有隐藏退出手势。
+- 静态源内化在代码里（`AppSettings.assetsBaseUrl` = `http://192.168.2.3:8082`）：`/manifest.json`、`POST /dislike/{id}`、`POST /api/telemetry` 同一个基址，Caddy 直接托管前者、把后两者转给 `sink.py`。无设置界面；没有隐藏退出手势。
 
 ## 构建（GitHub Actions）
 
